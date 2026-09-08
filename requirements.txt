@@ -7,3 +7,4 @@ pytest==9.1.1
 # Unpinned: PyTorch wheel selection is platform-specific (CPU/CUDA/arch),
 # pinning ultralytics here could pull an incompatible torch build on some machines.
 ultralytics
+Pillow==12.3.0

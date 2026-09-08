@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 edge.db
 .env
+tests/fixtures/sample_frames/

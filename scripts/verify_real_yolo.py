@@ -10,10 +10,15 @@ Run it manually against a real photo containing a person, e.g.:
 Requires `ultralytics` installed (see requirements.txt).
 """
 
+import os
 import sys
 
-from app.config import Config
-from app.detection import get_detector
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from app.config import Config  # noqa: E402
+from app.detection import get_detector  # noqa: E402
 
 
 def main():
