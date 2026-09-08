@@ -6,6 +6,7 @@ import pytest
 
 from app import create_app
 from app.models import Reading
+from app.relay import relay_cycle
 
 FIXTURES_DIR = os.path.join(
     os.path.dirname(__file__), "fixtures", "sample_frames"
@@ -133,3 +134,29 @@ def test_empty_frame_returns_no_command_and_creates_no_readings(app, client):
 
         readings = list(Reading.select().where(Reading.device_id == "dev-empty"))
         assert len(readings) == 0
+
+
+class FakeCloudResponse:
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+
+def test_frames_readings_are_picked_up_by_the_unmodified_relay_cycle(
+    app, client, monkeypatch
+):
+    with app.app_context():
+        _post_frame(client, "person_left.jpg", device_id="dev-relay")
+        _post_frame(client, "person_left.jpg", device_id="dev-relay")
+
+        readings = list(Reading.select().where(Reading.device_id == "dev-relay"))
+        assert len(readings) == 2
+        assert all(r.synced is False for r in readings)
+
+        monkeypatch.setattr(
+            "app.relay.requests.post", lambda *a, **k: FakeCloudResponse(201)
+        )
+        relay_cycle()
+
+        refreshed = list(Reading.select().where(Reading.device_id == "dev-relay"))
+        assert len(refreshed) == 2
+        assert all(r.synced is True for r in refreshed)

@@ -68,6 +68,81 @@ or wrong `X-Device-Key` returns `401`.
 python -m pytest tests/test_relay.py
 ```
 
+## Camera detection contract (Phase 4)
+
+`POST /frames` is the single HTTP contract the ESP32-CAM firmware (Phase 4,
+plan 04-03) implements against. One request, one response: upload a frame,
+get back the servo/alert command for that frame.
+
+### Request
+
+- Method: `POST /frames`
+- Header: `X-Device-Key: <shared secret>` — same check as `/ingest`, required
+- Content-Type: `multipart/form-data`
+- Form fields:
+  - `device_id` (string, required)
+  - `zone_id` (string, required)
+  - `frame_width` / `frame_height` (integers, optional) — declared frame
+    dimensions used for the pan/tilt calculation; default to 640x480 if
+    omitted
+  - `frame` (file, required) — the JPEG frame, as a multipart file field
+    named exactly `frame`
+
+### Response (200)
+
+```json
+{
+  "pan_delta": -0.5625,
+  "tilt_delta": 0.0,
+  "door_action": "lock",
+  "alert": true
+}
+```
+
+| Field | Type | Nullable | Description |
+|---|---|---|---|
+| `pan_delta` | float in `[-1.0, 1.0]` | yes | Horizontal servo delta; negative = pan left. `null` unless a `person` is the confirmed detection in this frame. |
+| `tilt_delta` | float in `[-1.0, 1.0]` | yes | Vertical servo delta; negative = tilt up. `null` under the same condition as `pan_delta`. |
+| `door_action` | string (`"lock"`) | yes | `"lock"` when this frame fires the door-lock action; `null` when no confirmed detection this frame, or when a detection is confirmed but the device is still within its `DOOR_ACTION_COOLDOWN_SECONDS` window (pan/tilt still tracks in that case; the door just doesn't re-fire). |
+| `alert` | boolean | no | `true` whenever a confirmed detection is active in this frame (drives a local buzzer/LED), `false` otherwise. |
+
+Other responses: `401` (missing/wrong `X-Device-Key`), `400` (undecodable
+image data), `413` (frame exceeds `MAX_CONTENT_LENGTH`).
+
+### Manual test with curl
+
+```bash
+curl -X POST localhost:5000/frames \
+  -H "X-Device-Key: $DEVICE_SHARED_SECRET" \
+  -F "device_id=dev-1" \
+  -F "zone_id=zone-1" \
+  -F "frame=@tests/fixtures/sample_frames/person_left.jpg;type=image/jpeg"
+```
+
+### Mock vs real detection backend
+
+`DETECTION_BACKEND=mock` (default) uses a filename-convention detector with
+zero ML dependencies, so automated tests never need a camera, network
+access, or model weights. To run real detection:
+
+1. Set `DETECTION_BACKEND=yolo` in `.env`.
+2. On first run, Ultralytics downloads `yolov8n.pt` automatically — this
+   needs network access. It's a one-time manual step (Juan's environment),
+   not part of the automated test suite.
+3. Optionally point `YOLO_MODEL_PATH` at an existing local weights file to
+   skip the download.
+
+### End-to-end harness (no camera required)
+
+```bash
+python scripts/run_test_folder.py
+```
+
+Replays every image in `tests/fixtures/sample_frames/` (regenerate via
+`python scripts/generate_test_images.py` if missing) through `/frames` for
+one simulated device and prints a per-image summary — proving the full
+frame → detection → debounce → telemetry → relay path end to end.
+
 ## Device simulator
 
 `simulator/device_simulator.py` stands in for the physical ESP32 (built in

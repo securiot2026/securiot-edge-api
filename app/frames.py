@@ -5,6 +5,7 @@ import tempfile
 import uuid
 
 from flask import Blueprint, current_app, jsonify, request
+from PIL import Image, UnidentifiedImageError
 
 from app import debounce
 from app.detection import DEFAULT_FRAME_HEIGHT, DEFAULT_FRAME_WIDTH, get_detector
@@ -55,6 +56,15 @@ def frames():
     tmp_path = os.path.join(tmp_dir, frame_file.filename or "frame.jpg")
     try:
         frame_file.save(tmp_path)
+
+        # T-04-06 (DoS): reject undecodable image data with 400 before it
+        # ever reaches a CPU-bound YOLO inference call.
+        try:
+            with Image.open(tmp_path) as img:
+                img.verify()
+        except (OSError, UnidentifiedImageError):
+            return jsonify({"error": "invalid image data"}), 400
+
         detector = get_detector(current_app.config)
         try:
             detections = detector.detect(tmp_path)

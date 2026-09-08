@@ -22,3 +22,4 @@ class Config:
     DOOR_ACTION_COOLDOWN_SECONDS = int(
         os.environ.get("DOOR_ACTION_COOLDOWN_SECONDS", "30")
     )
+    MAX_CONTENT_LENGTH = int(os.environ.get("MAX_CONTENT_LENGTH", str(2 * 1024 * 1024)))
