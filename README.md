@@ -67,3 +67,14 @@ or wrong `X-Device-Key` returns `401`.
 ```bash
 python -m pytest tests/test_relay.py
 ```
+
+## Device simulator
+
+`simulator/device_simulator.py` stands in for the physical ESP32 (built in
+Phase 4). It posts synthetic door-contact readings to this API's `/ingest`
+endpoint on a timer - see its own `simulator/requirements.txt` for its one
+extra dependency (`requests`, already covered above).
+
+For the full local demo (Cloud API + this Edge API + the simulator running
+together, including how to reproduce the connectivity-interruption test),
+see `docs/demo/phase-1-local-run.md` in the main planning repo.
