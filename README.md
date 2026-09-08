@@ -20,11 +20,21 @@ cp .env.example .env
 
 Edit `.env` and set:
 
-- `EDGE_DB_PATH` — path to the local SQLite buffer file (default `edge.db`)
-- `DEVICE_SHARED_SECRET` — shared secret devices must send in `X-Device-Key`
-- `CLOUD_API_URL` — base URL of the Cloud API this Edge instance relays to
-- `CLOUD_DEVICE_API_KEY` — key the Edge API sends to the Cloud API
-- `RELAY_INTERVAL_SECONDS` — how often the relay checks for unsynced readings
+- `EDGE_DB_PATH`: path to the local SQLite buffer file (default `edge.db`)
+- `DEVICE_SHARED_SECRET`: shared secret devices must send in `X-Device-Key`
+- `CLOUD_API_URL`: base URL of the Cloud API this Edge instance relays to
+- `CLOUD_DEVICE_API_KEY`: key the Edge API sends to the Cloud API
+- `RELAY_INTERVAL_SECONDS`: how often the relay checks for unsynced readings
+
+Phase 4 (camera detection) config, all optional with working defaults, add to `.env.example` and `.env` if you want to override them:
+
+- `DETECTION_BACKEND`: `mock` (default, no ML dependencies) or `yolo` (real Ultralytics YOLOv8n inference)
+- `YOLO_MODEL_PATH`: local path to YOLO weights, skips the automatic first-run download when set
+- `ALLOWED_OBJECT_CLASS`: the non-person COCO class treated as a not-allowed object (default in `app/config.py`)
+- `DETECTION_CONFIDENCE_THRESHOLD`: minimum confidence for a detection to count
+- `DETECTION_DEBOUNCE_COUNT`: consecutive qualifying frames required before escalating
+- `DOOR_ACTION_COOLDOWN_SECONDS`: minimum time between two door-lock actions for the same device
+- `MAX_CONTENT_LENGTH`: maximum accepted size (bytes) for an uploaded frame
 
 ## Running
 
