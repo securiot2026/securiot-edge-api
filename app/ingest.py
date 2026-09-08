@@ -2,7 +2,7 @@ import datetime
 
 from flask import Blueprint, current_app, jsonify, request
 
-from app.models import Reading
+from app.reading_buffer import buffer_reading
 
 ingest_bp = Blueprint("ingest", __name__)
 
@@ -36,14 +36,13 @@ def ingest():
     except ValueError:
         return jsonify({"error": "invalid recorded_at"}), 400
 
-    Reading.insert(
+    buffer_reading(
         reading_id=payload["reading_id"],
         device_id=payload["device_id"],
         zone_id=payload["zone_id"],
         sensor_type=payload["sensor_type"],
         value=payload["value"],
         recorded_at=recorded_at,
-        synced=False,
-    ).on_conflict_ignore().execute()
+    )
 
     return jsonify({"status": "buffered"}), 201
