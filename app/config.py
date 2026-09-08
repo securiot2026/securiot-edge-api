@@ -18,3 +18,4 @@ class Config:
     DETECTION_CONFIDENCE_THRESHOLD = float(
         os.environ.get("DETECTION_CONFIDENCE_THRESHOLD", "0.5")
     )
+    DETECTION_DEBOUNCE_COUNT = int(os.environ.get("DETECTION_DEBOUNCE_COUNT", "2"))
