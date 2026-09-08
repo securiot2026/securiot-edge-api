@@ -93,6 +93,33 @@ def test_confirmed_person_detection_buffers_readings_and_returns_servo_command(
             assert reading.synced is False
 
 
+def test_door_action_cooldown_suppresses_repeat_lock_but_keeps_tracking(app, client):
+    with app.app_context():
+        # Build the streak up to the debounce threshold (frame 2 escalates
+        # and fires the door lock, starting the cooldown window).
+        _post_frame(client, "person_left.jpg", device_id="dev-cooldown")
+        triggering = _post_frame(client, "person_left.jpg", device_id="dev-cooldown")
+        assert triggering.get_json()["door_action"] == "lock"
+
+        # A further frame while the person remains in view, still within
+        # the cooldown window: pan/tilt keeps tracking, but the door does
+        # not re-lock and no second door_contact Reading is created.
+        continued = _post_frame(client, "person_left.jpg", device_id="dev-cooldown")
+
+        assert continued.status_code == 200
+        body = continued.get_json()
+        assert body["pan_delta"] is not None
+        assert body["tilt_delta"] is not None
+        assert body["door_action"] is None
+
+        readings = list(Reading.select().where(Reading.device_id == "dev-cooldown"))
+        door_readings = [r for r in readings if r.sensor_type == "door_contact"]
+        camera_readings = [r for r in readings if r.sensor_type == "camera_detection"]
+
+        assert len(door_readings) == 1
+        assert len(camera_readings) == 2
+
+
 def test_empty_frame_returns_no_command_and_creates_no_readings(app, client):
     with app.app_context():
         response = _post_frame(client, "empty.jpg", device_id="dev-empty")

@@ -18,6 +18,14 @@ frames_bp = Blueprint("frames", __name__)
 # restart, single-prototype-device scope).
 _last_door_action = {}
 
+# device_id -> bool, True once app/debounce.py has confirmed a detection
+# episode for this device and until a non-qualifying frame ends it. This
+# lets pan/tilt tracking and reading history continue on every frame of a
+# confirmed episode, not just the single frame where debounce.record()
+# reports escalate=True (debounce only reports that once per episode, by
+# design; see app/debounce.py).
+_active_episode = {}
+
 
 def _empty_response():
     return jsonify(
@@ -65,8 +73,17 @@ def frames():
         max(qualifying, key=lambda d: d["confidence"]) if qualifying else None
     )
 
-    result = debounce.record(device_id, qualifying=bool(top_detection))
-    if not result["escalate"]:
+    qualifying_frame = bool(top_detection)
+    result = debounce.record(device_id, qualifying=qualifying_frame)
+
+    if not qualifying_frame:
+        _active_episode[device_id] = False
+        return _empty_response(), 200
+
+    if result["escalate"]:
+        _active_episode[device_id] = True
+
+    if not _active_episode.get(device_id, False):
         return _empty_response(), 200
 
     pan_delta = tilt_delta = None
