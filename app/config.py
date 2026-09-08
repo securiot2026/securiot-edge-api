@@ -19,3 +19,6 @@ class Config:
         os.environ.get("DETECTION_CONFIDENCE_THRESHOLD", "0.5")
     )
     DETECTION_DEBOUNCE_COUNT = int(os.environ.get("DETECTION_DEBOUNCE_COUNT", "2"))
+    DOOR_ACTION_COOLDOWN_SECONDS = int(
+        os.environ.get("DOOR_ACTION_COOLDOWN_SECONDS", "30")
+    )

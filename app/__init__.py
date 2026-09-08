@@ -3,6 +3,7 @@ from flask import Flask
 from peewee import SqliteDatabase
 
 from app.config import Config
+from app.frames import frames_bp
 from app.ingest import ingest_bp
 from app.models import Reading, database_proxy
 from app.relay import relay_cycle
@@ -18,6 +19,7 @@ def create_app(config_object=Config, start_relay=True):
     database.create_tables([Reading])
 
     app.register_blueprint(ingest_bp)
+    app.register_blueprint(frames_bp)
 
     if start_relay:
         scheduler = BackgroundScheduler()
