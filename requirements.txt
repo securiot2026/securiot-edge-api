@@ -1,0 +1,10 @@
+Flask==3.1.3
+peewee==4.5.0
+requests==2.34.2
+APScheduler==3.11.3
+python-dotenv==1.2.3
+pytest==9.1.1
+# Unpinned: PyTorch wheel selection is platform-specific (CPU/CUDA/arch),
+# pinning ultralytics here could pull an incompatible torch build on some machines.
+ultralytics
+Pillow==12.3.0
