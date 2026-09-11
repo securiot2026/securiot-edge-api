@@ -77,18 +77,44 @@ best known identity or `unknown` in the existing `/frames` response. It does
 not change the current object/person alert, debounce, pan/tilt, door-action, or
 relay behavior.
 
-The complete processing flow is:
+The complete request and synchronization flow is:
 
-```text
-Camera / frame
-  -> YOLO face detection
-  -> face bounding box
-  -> expanded square face crop
-  -> ArcFace ONNX embedding
-  -> cosine-similarity comparison
-  -> identity / unknown
-  -> Edge API response
+```mermaid
+flowchart TD
+    camera["Camera / ESP32"] --> frames["POST /frames<br/>JPEG + device metadata"]
+    frames --> auth{"Valid X-Device-Key?"}
+    auth -- "No" --> unauthorized["401 Unauthorized"]
+    auth -- "Yes" --> image["Validate and store temporary image"]
+
+    image --> general["General detector<br/>person / allowed object"]
+    image --> face_enabled{"FACE_RECOGNITION_ENABLED?"}
+
+    general --> debounce{"Consecutive detection confirmed?"}
+    debounce -- "No" --> response["JSON response"]
+    debounce -- "Yes" --> tracking["Compute pan / tilt for a person"]
+    tracking --> cooldown{"Door action outside cooldown?"}
+    cooldown -- "Yes" --> lock["door_action = lock"]
+    cooldown -- "No" --> no_lock["door_action = null"]
+    lock --> sqlite["Buffer readings in SQLite"]
+    no_lock --> sqlite
+    sqlite --> relay["Scheduled relay with retry / backoff"]
+    relay --> cloud["Cloud API<br/>/api/v1/telemetry"]
+
+    face_enabled -- "No" --> omit["Omit faces field"]
+    face_enabled -- "Yes" --> face_yolo["Face-specific YOLO detection"]
+    face_yolo --> crop["Expanded square face crop"]
+    crop --> arcface["ArcFace ONNX embedding"]
+    arcface --> match["Cosine similarity against identity centroids"]
+    match --> threshold{"Score reaches threshold?"}
+    threshold -- "Yes" --> known["Known identity"]
+    threshold -- "No" --> unknown["unknown"]
+    known --> response
+    unknown --> response
+    omit --> response
 ```
+
+Face recognition only enriches the `faces` response field. It does not decide
+whether to alert, move the camera, or lock the door.
 
 ### Architecture and responsibilities
 
