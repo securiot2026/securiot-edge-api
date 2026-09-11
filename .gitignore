@@ -3,9 +3,12 @@ __pycache__/
 *.pyc
 edge.db
 .env
+temp_auto_push.bat
 tests/fixtures/sample_frames/
 models/
 data/faces/
 *.pt
 *.onnx
 *.npz
+.gitignore
+branch_structure.json
