@@ -4,3 +4,8 @@ __pycache__/
 edge.db
 .env
 tests/fixtures/sample_frames/
+models/
+data/faces/
+*.pt
+*.onnx
+*.npz

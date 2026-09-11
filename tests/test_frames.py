@@ -1,16 +1,13 @@
-import datetime
 import io
-import os
 
 import pytest
+from PIL import Image
 
 from app import create_app
 from app.models import Reading
 from app.relay import relay_cycle
-
-FIXTURES_DIR = os.path.join(
-    os.path.dirname(__file__), "fixtures", "sample_frames"
-)
+from app.vision import VisionError
+from app.vision.service import FaceRecognition
 
 
 class FakeConfig:
@@ -39,8 +36,9 @@ def client(app):
 
 
 def _fixture_bytes(name):
-    with open(os.path.join(FIXTURES_DIR, name), "rb") as fh:
-        return fh.read()
+    output = io.BytesIO()
+    Image.new("RGB", (640, 480), (30, 30, 30)).save(output, format="JPEG")
+    return output.getvalue()
 
 
 def _post_frame(client, fixture_name, device_id, zone_id="zone-1", headers=None):
@@ -131,6 +129,7 @@ def test_empty_frame_returns_no_command_and_creates_no_readings(app, client):
         assert body["tilt_delta"] is None
         assert body["door_action"] is None
         assert body["alert"] is False
+        assert "faces" not in body
 
         readings = list(Reading.select().where(Reading.device_id == "dev-empty"))
         assert len(readings) == 0
@@ -160,3 +159,53 @@ def test_frames_readings_are_picked_up_by_the_unmodified_relay_cycle(
         refreshed = list(Reading.select().where(Reading.device_id == "dev-relay"))
         assert len(refreshed) == 2
         assert all(r.synced is True for r in refreshed)
+
+
+def test_frames_includes_face_recognition_when_enabled(monkeypatch):
+    class FaceConfig(FakeConfig):
+        FACE_RECOGNITION_ENABLED = True
+
+    recognizer = type(
+        "Recognizer",
+        (),
+        {
+            "recognize_path": lambda self, path: [
+                FaceRecognition((10, 20, 60, 80), 0.92, "Ada", 0.81, True)
+            ]
+        },
+    )()
+    monkeypatch.setattr("app.frames.get_face_recognizer", lambda config: recognizer)
+    app = create_app(config_object=FaceConfig, start_relay=False)
+    client = app.test_client()
+
+    with app.app_context():
+        response = _post_frame(client, "empty.jpg", device_id="dev-face")
+
+    assert response.status_code == 200
+    assert response.get_json()["faces"] == [
+        {
+            "bbox": [10, 20, 60, 80],
+            "detection_confidence": 0.92,
+            "identity": "Ada",
+            "similarity": 0.81,
+            "known": True,
+        }
+    ]
+
+
+def test_frames_returns_503_when_enabled_recognition_is_unavailable(monkeypatch):
+    class FaceConfig(FakeConfig):
+        FACE_RECOGNITION_ENABLED = True
+
+    def unavailable(config):
+        raise VisionError("missing local model")
+
+    monkeypatch.setattr("app.frames.get_face_recognizer", unavailable)
+    app = create_app(config_object=FaceConfig, start_relay=False)
+    client = app.test_client()
+
+    with app.app_context():
+        response = _post_frame(client, "empty.jpg", device_id="dev-face-error")
+
+    assert response.status_code == 503
+    assert response.get_json() == {"error": "face recognition unavailable"}

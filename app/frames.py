@@ -11,6 +11,7 @@ from app import debounce
 from app.detection import DEFAULT_FRAME_HEIGHT, DEFAULT_FRAME_WIDTH, get_detector
 from app.pan_tilt import compute_pan_tilt
 from app.reading_buffer import buffer_reading
+from app.vision import VisionError, get_face_recognizer
 
 frames_bp = Blueprint("frames", __name__)
 
@@ -28,15 +29,20 @@ _last_door_action = {}
 _active_episode = {}
 
 
-def _empty_response():
-    return jsonify(
-        {
-            "pan_delta": None,
-            "tilt_delta": None,
-            "door_action": None,
-            "alert": False,
-        }
-    )
+def _response_payload(pan_delta, tilt_delta, door_action, alert, faces=None):
+    payload = {
+        "pan_delta": pan_delta,
+        "tilt_delta": tilt_delta,
+        "door_action": door_action,
+        "alert": alert,
+    }
+    if faces is not None:
+        payload["faces"] = [face.to_dict() for face in faces]
+    return payload
+
+
+def _empty_response(faces=None):
+    return jsonify(_response_payload(None, None, None, False, faces))
 
 
 @frames_bp.route("/frames", methods=["POST"])
@@ -54,6 +60,7 @@ def frames():
     # and scripts/run_test_folder.py) inspects the basename, not the bytes.
     tmp_dir = tempfile.mkdtemp()
     tmp_path = os.path.join(tmp_dir, frame_file.filename or "frame.jpg")
+    face_recognitions = None
     try:
         frame_file.save(tmp_path)
 
@@ -70,6 +77,18 @@ def frames():
             detections = detector.detect(tmp_path)
         except Exception:
             return jsonify({"error": "invalid image data"}), 400
+
+        if current_app.config.get("FACE_RECOGNITION_ENABLED", False):
+            try:
+                face_recognitions = get_face_recognizer(
+                    current_app.config
+                ).recognize_path(tmp_path)
+            except VisionError as exc:
+                current_app.logger.error("Face recognition unavailable: %s", exc)
+                return (
+                    jsonify({"error": "face recognition unavailable"}),
+                    503,
+                )
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
@@ -88,13 +107,13 @@ def frames():
 
     if not qualifying_frame:
         _active_episode[device_id] = False
-        return _empty_response(), 200
+        return _empty_response(face_recognitions), 200
 
     if result["escalate"]:
         _active_episode[device_id] = True
 
     if not _active_episode.get(device_id, False):
-        return _empty_response(), 200
+        return _empty_response(face_recognitions), 200
 
     pan_delta = tilt_delta = None
     if top_detection["class_name"] == "person":
@@ -147,12 +166,13 @@ def frames():
 
     return (
         jsonify(
-            {
-                "pan_delta": pan_delta,
-                "tilt_delta": tilt_delta,
-                "door_action": door_action,
-                "alert": True,
-            }
+            _response_payload(
+                pan_delta,
+                tilt_delta,
+                door_action,
+                True,
+                face_recognitions,
+            )
         ),
         200,
     )
