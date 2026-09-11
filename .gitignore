@@ -1,6 +1,9 @@
 .venv/
 __pycache__/
 *.pyc
+temp_auto_push.bat
 edge.db
 .env
 tests/fixtures/sample_frames/
+.gitignore
+branch_structure.json
