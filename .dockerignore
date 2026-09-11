@@ -7,3 +7,8 @@ __pycache__
 !.env.example
 edge.db
 tests/fixtures
+models
+data/faces
+*.pt
+*.onnx
+*.npz
