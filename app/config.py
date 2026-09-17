@@ -35,6 +35,7 @@ class Config:
     DOOR_ACTION_COOLDOWN_SECONDS = int(
         os.environ.get("DOOR_ACTION_COOLDOWN_SECONDS", "30")
     )
+    COMMAND_EXPIRY_SECONDS = int(os.environ.get("COMMAND_EXPIRY_SECONDS", "8"))
     MAX_CONTENT_LENGTH = int(os.environ.get("MAX_CONTENT_LENGTH", str(2 * 1024 * 1024)))
 
     FACE_RECOGNITION_ENABLED = _env_bool("FACE_RECOGNITION_ENABLED", False)

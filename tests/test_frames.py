@@ -4,6 +4,7 @@ import pytest
 from PIL import Image
 
 from app import create_app
+from app.commands import _manual_command_delivered, _pending_commands
 from app.models import DeviceSetting, Reading
 from app.relay import relay_cycle
 from app.vision import VisionError
@@ -13,6 +14,7 @@ from app.vision.service import FaceRecognition
 class FakeConfig:
     EDGE_DB_PATH = ":memory:"
     DEVICE_SHARED_SECRET = "testsecret"
+    EDGE_ADMIN_API_KEY = "adminsecret"
     CLOUD_API_URL = "http://cloud.example"
     CLOUD_DEVICE_API_KEY = "cloudkey"
     RELAY_INTERVAL_SECONDS = 3600
@@ -23,6 +25,16 @@ class FakeConfig:
     DETECTION_CONFIDENCE_THRESHOLD = 0.5
     DETECTION_DEBOUNCE_COUNT = 2
     DOOR_ACTION_COOLDOWN_SECONDS = 30
+    COMMAND_EXPIRY_SECONDS = 8
+
+
+@pytest.fixture(autouse=True)
+def _clear_command_state():
+    _pending_commands.clear()
+    _manual_command_delivered.clear()
+    yield
+    _pending_commands.clear()
+    _manual_command_delivered.clear()
 
 
 @pytest.fixture
@@ -249,3 +261,133 @@ def test_frames_returns_503_when_enabled_recognition_is_unavailable(monkeypatch)
 
     assert response.status_code == 503
     assert response.get_json() == {"error": "face recognition unavailable"}
+
+
+def test_manual_command_delivered_even_on_non_qualifying_frame(app, client):
+    with app.app_context():
+        import datetime
+
+        _pending_commands["dev-manual-empty"] = {
+            "light": {
+                "action": {"on": True},
+                "issued_at": datetime.datetime.utcnow(),
+            }
+        }
+
+        response = _post_frame(client, "empty.jpg", device_id="dev-manual-empty")
+
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["manual_command"]["actuator"] == "light"
+        assert body["manual_command"]["action"] == {"on": True}
+        # Delivered once: the pending slot is now empty for this device.
+        assert "dev-manual-empty" not in _pending_commands or not _pending_commands[
+            "dev-manual-empty"
+        ]
+
+
+def test_manual_command_expires_silently_after_ttl(app, client):
+    with app.app_context():
+        import datetime
+
+        stale_issued_at = datetime.datetime.utcnow() - datetime.timedelta(seconds=30)
+        _pending_commands["dev-manual-expired"] = {
+            "buzzer": {"action": {"on": True}, "issued_at": stale_issued_at}
+        }
+
+        response = _post_frame(client, "empty.jpg", device_id="dev-manual-expired")
+
+        assert response.status_code == 200
+        assert response.get_json()["manual_command"] is None
+        assert not _pending_commands.get("dev-manual-expired")
+
+
+def test_manual_pan_tilt_command_overrides_automatic_tracking_delta(app, client):
+    with app.app_context():
+        import datetime
+
+        # Build an active tracking episode first (matches the existing
+        # cooldown test's setup), then queue a manual pan/tilt command for
+        # the next poll — it must prevail over that poll's own automatic
+        # tracking delta, not blend with it.
+        _post_frame(client, "person_left.jpg", device_id="dev-manual-override")
+        _post_frame(client, "person_left.jpg", device_id="dev-manual-override")
+
+        _pending_commands["dev-manual-override"] = {
+            "pan_tilt": {
+                "action": {"pan_delta": -5.0, "tilt_delta": 2.0},
+                "issued_at": datetime.datetime.utcnow(),
+            }
+        }
+
+        response = _post_frame(
+            client, "person_left.jpg", device_id="dev-manual-override"
+        )
+
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["manual_command"]["actuator"] == "pan_tilt"
+        assert body["manual_command"]["action"] == {
+            "pan_delta": -5.0,
+            "tilt_delta": 2.0,
+        }
+        # The automatic delta is suppressed this cycle — firmware applies
+        # the manual command instead, never both.
+        assert body["pan_delta"] is None
+        assert body["tilt_delta"] is None
+
+
+def test_manual_command_on_other_actuator_does_not_suppress_automatic_tracking(
+    app, client
+):
+    with app.app_context():
+        import datetime
+
+        _post_frame(client, "person_left.jpg", device_id="dev-manual-light")
+        _post_frame(client, "person_left.jpg", device_id="dev-manual-light")
+
+        _pending_commands["dev-manual-light"] = {
+            "light": {
+                "action": {"on": True},
+                "issued_at": datetime.datetime.utcnow(),
+            }
+        }
+
+        response = _post_frame(
+            client, "person_left.jpg", device_id="dev-manual-light"
+        )
+
+        body = response.get_json()
+        assert body["manual_command"]["actuator"] == "light"
+        assert body["pan_delta"] is not None
+        assert body["tilt_delta"] is not None
+
+
+def test_manual_command_suppresses_automatic_door_action_during_cooldown(
+    app, client
+):
+    with app.app_context():
+        import datetime
+
+        # Directly stamp the internal suppression-state dict, per
+        # 07-CONTEXT.md's D-R2: CTRL-06 is verified at the unit level
+        # against app/commands.py's suppression check, not via a literal
+        # end-to-end POST through /commands with a "door" actuator value
+        # (the public actuator enum never accepts "door").
+        _manual_command_delivered["dev-manual-door"] = {
+            "door": datetime.datetime.utcnow()
+        }
+
+        _post_frame(client, "person_left.jpg", device_id="dev-manual-door")
+        triggering = _post_frame(
+            client, "person_left.jpg", device_id="dev-manual-door"
+        )
+
+        assert triggering.status_code == 200
+        assert triggering.get_json()["door_action"] is None
+
+        readings = list(
+            Reading.select().where(Reading.device_id == "dev-manual-door")
+        )
+        door_readings = [r for r in readings if r.sensor_type == "door_contact"]
+        assert door_readings == []

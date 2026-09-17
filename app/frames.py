@@ -8,6 +8,7 @@ from flask import Blueprint, current_app, jsonify, request
 from PIL import Image, UnidentifiedImageError
 
 from app import debounce
+from app.commands import manual_suppression_active, pop_deliverable_command
 from app.detection import DEFAULT_FRAME_HEIGHT, DEFAULT_FRAME_WIDTH, get_detector
 from app.device_settings import get_face_recognition_enabled
 from app.pan_tilt import compute_pan_tilt
@@ -30,20 +31,25 @@ _last_door_action = {}
 _active_episode = {}
 
 
-def _response_payload(pan_delta, tilt_delta, door_action, alert, faces=None):
+def _response_payload(
+    pan_delta, tilt_delta, door_action, alert, faces=None, manual_command=None
+):
     payload = {
         "pan_delta": pan_delta,
         "tilt_delta": tilt_delta,
         "door_action": door_action,
         "alert": alert,
+        "manual_command": manual_command,
     }
     if faces is not None:
         payload["faces"] = [face.to_dict() for face in faces]
     return payload
 
 
-def _empty_response(faces=None):
-    return jsonify(_response_payload(None, None, None, False, faces))
+def _empty_response(faces=None, manual_command=None):
+    return jsonify(
+        _response_payload(None, None, None, False, faces, manual_command)
+    )
 
 
 @frames_bp.route("/frames", methods=["POST"])
@@ -95,6 +101,13 @@ def frames():
             os.unlink(tmp_path)
         os.rmdir(tmp_dir)
 
+    # Manual commands are delivered on the very next /frames poll regardless
+    # of detection state (CTRL-04) — pop before any early-return path so an
+    # operator's pan/tilt/light/buzzer command is never gated on a person
+    # being in view.
+    now = datetime.datetime.utcnow()
+    manual_command = pop_deliverable_command(device_id, now)
+
     allowed_object_class = current_app.config.get("ALLOWED_OBJECT_CLASS", "backpack")
     qualifying = [
         d for d in detections if d["class_name"] in ("person", allowed_object_class)
@@ -108,21 +121,25 @@ def frames():
 
     if not qualifying_frame:
         _active_episode[device_id] = False
-        return _empty_response(face_recognitions), 200
+        return _empty_response(face_recognitions, manual_command), 200
 
     if result["escalate"]:
         _active_episode[device_id] = True
 
     if not _active_episode.get(device_id, False):
-        return _empty_response(face_recognitions), 200
+        return _empty_response(face_recognitions, manual_command), 200
 
     pan_delta = tilt_delta = None
-    if top_detection["class_name"] == "person":
-        frame_width = int(request.form.get("frame_width", DEFAULT_FRAME_WIDTH))
-        frame_height = int(request.form.get("frame_height", DEFAULT_FRAME_HEIGHT))
-        delta = compute_pan_tilt(top_detection["bbox"], frame_width, frame_height)
-        pan_delta = delta["pan_delta"]
-        tilt_delta = delta["tilt_delta"]
+    # A manual pan/tilt command prevails over the same-cycle automatic
+    # tracking delta (CTRL-06) — never blend the two into a combined/jittery
+    # servo move. The firmware applies whichever one is present.
+    if manual_command is None or manual_command["actuator"] != "pan_tilt":
+        if top_detection["class_name"] == "person":
+            frame_width = int(request.form.get("frame_width", DEFAULT_FRAME_WIDTH))
+            frame_height = int(request.form.get("frame_height", DEFAULT_FRAME_HEIGHT))
+            delta = compute_pan_tilt(top_detection["bbox"], frame_width, frame_height)
+            pan_delta = delta["pan_delta"]
+            tilt_delta = delta["tilt_delta"]
 
     recorded_at = datetime.datetime.utcnow()
     buffer_reading(
@@ -150,7 +167,7 @@ def frames():
     within_cooldown = (
         last_fired is not None
         and (recorded_at - last_fired).total_seconds() < cooldown_seconds
-    )
+    ) or manual_suppression_active(device_id, "door", recorded_at, cooldown_seconds)
 
     door_action = None
     if not within_cooldown:
@@ -173,6 +190,7 @@ def frames():
                 door_action,
                 True,
                 face_recognitions,
+                manual_command,
             )
         ),
         200,

@@ -2,6 +2,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask
 from peewee import SqliteDatabase
 
+from app.commands import commands_bp
 from app.config import Config
 from app.device_settings import device_settings_bp
 from app.faces import faces_bp
@@ -24,6 +25,7 @@ def create_app(config_object=Config, start_relay=True):
     app.register_blueprint(frames_bp)
     app.register_blueprint(faces_bp)
     app.register_blueprint(device_settings_bp)
+    app.register_blueprint(commands_bp)
 
     if start_relay:
         scheduler = BackgroundScheduler()
