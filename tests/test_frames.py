@@ -4,7 +4,7 @@ import pytest
 from PIL import Image
 
 from app import create_app
-from app.models import Reading
+from app.models import DeviceSetting, Reading
 from app.relay import relay_cycle
 from app.vision import VisionError
 from app.vision.service import FaceRecognition
@@ -191,6 +191,46 @@ def test_frames_includes_face_recognition_when_enabled(monkeypatch):
             "known": True,
         }
     ]
+
+
+def test_per_device_override_enables_recognition_over_global_default(monkeypatch):
+    class FaceConfig(FakeConfig):
+        FACE_RECOGNITION_ENABLED = False
+
+    recognizer = type(
+        "Recognizer",
+        (),
+        {
+            "recognize_path": lambda self, path: [
+                FaceRecognition((10, 20, 60, 80), 0.92, "Ada", 0.81, True)
+            ]
+        },
+    )()
+    monkeypatch.setattr("app.frames.get_face_recognizer", lambda config: recognizer)
+    app = create_app(config_object=FaceConfig, start_relay=False)
+    client = app.test_client()
+
+    with app.app_context():
+        DeviceSetting.create(device_id="dev-override-on", face_recognition_enabled=True)
+        response = _post_frame(client, "empty.jpg", device_id="dev-override-on")
+
+    assert response.status_code == 200
+    assert "faces" in response.get_json()
+
+
+def test_per_device_override_disables_recognition_over_global_default(monkeypatch):
+    class FaceConfig(FakeConfig):
+        FACE_RECOGNITION_ENABLED = True
+
+    app = create_app(config_object=FaceConfig, start_relay=False)
+    client = app.test_client()
+
+    with app.app_context():
+        DeviceSetting.create(device_id="dev-override-off", face_recognition_enabled=False)
+        response = _post_frame(client, "empty.jpg", device_id="dev-override-off")
+
+    assert response.status_code == 200
+    assert "faces" not in response.get_json()
 
 
 def test_frames_returns_503_when_enabled_recognition_is_unavailable(monkeypatch):

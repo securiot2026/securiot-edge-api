@@ -9,6 +9,7 @@ from PIL import Image, UnidentifiedImageError
 
 from app import debounce
 from app.detection import DEFAULT_FRAME_HEIGHT, DEFAULT_FRAME_WIDTH, get_detector
+from app.device_settings import get_face_recognition_enabled
 from app.pan_tilt import compute_pan_tilt
 from app.reading_buffer import buffer_reading
 from app.vision import VisionError, get_face_recognizer
@@ -78,7 +79,7 @@ def frames():
         except Exception:
             return jsonify({"error": "invalid image data"}), 400
 
-        if current_app.config.get("FACE_RECOGNITION_ENABLED", False):
+        if get_face_recognition_enabled(device_id):
             try:
                 face_recognitions = get_face_recognizer(
                     current_app.config

@@ -17,6 +17,12 @@ class BaseModel(Model):
         database = database_proxy
 
 
+class DeviceSetting(BaseModel):
+    device_id = CharField(unique=True)
+    face_recognition_enabled = BooleanField(null=True)
+    updated_at = DateTimeField(default=datetime.datetime.utcnow)
+
+
 class Reading(BaseModel):
     reading_id = CharField(unique=True)
     device_id = CharField()

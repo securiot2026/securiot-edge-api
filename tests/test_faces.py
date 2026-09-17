@@ -105,6 +105,9 @@ def test_successful_enrollment_returns_201_and_cleans_up_temp_dir(app, client, m
         return path
 
     monkeypatch.setattr("app.faces.tempfile.mkdtemp", recording_mkdtemp)
+    monkeypatch.setattr(
+        faces_module, "validate_capture_quality", lambda paths, settings: (paths, [])
+    )
 
     fake_result = EnrollmentResult(
         identity_path="data/faces/ada-lovelace/identity.npz",
@@ -136,6 +139,9 @@ def test_vision_error_returns_400_and_cleans_up(app, client, monkeypatch):
         return path
 
     monkeypatch.setattr("app.faces.tempfile.mkdtemp", recording_mkdtemp)
+    monkeypatch.setattr(
+        faces_module, "validate_capture_quality", lambda paths, settings: (paths, [])
+    )
 
     def raise_vision_error(name, paths, settings):
         raise VisionError("Only 1 valid enrollment images were found")
@@ -148,6 +154,35 @@ def test_vision_error_returns_400_and_cleans_up(app, client, monkeypatch):
     assert response.status_code == 400
     assert "error" in response.get_json()
     assert not os.path.exists(recorded_path["path"])
+
+
+def test_quality_gate_skips_are_excluded_from_enrollment_and_reported(app, client, monkeypatch):
+    captured_args = {}
+
+    def fake_validate_capture_quality(paths, settings):
+        # Exclude the first path as a quality-gate rejection; pass the rest through.
+        return paths[1:], [f"{paths[0].name}: Image is too blurry; hold still"]
+
+    def fake_enroll_identity(name, paths, settings):
+        captured_args["paths"] = paths
+        return EnrollmentResult(
+            identity_path="data/faces/ada-lovelace/identity.npz",
+            accepted_images=len(paths),
+            skipped_images=(),
+        )
+
+    monkeypatch.setattr(
+        faces_module, "validate_capture_quality", fake_validate_capture_quality
+    )
+    monkeypatch.setattr(faces_module, "enroll_identity", fake_enroll_identity)
+
+    with app.app_context():
+        response = _post_faces(client, count=3)
+
+    assert response.status_code == 201
+    body = response.get_json()
+    assert any("too blurry" in reason for reason in body["skipped_images"])
+    assert len(captured_args["paths"]) == 2
 
 
 def test_no_images_returns_400(app, client):

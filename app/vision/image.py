@@ -15,6 +15,16 @@ def normalize(vector: np.ndarray) -> np.ndarray:
     return value / norm
 
 
+def laplacian_variance(image: np.ndarray) -> float:
+    """Sharpness score: higher means less blurry. 0.0 for an empty crop."""
+    import cv2
+
+    if image.size == 0:
+        return 0.0
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
 def expanded_square_crop(frame: np.ndarray, box: BBox, margin: float) -> np.ndarray:
     """Return a clipped square crop around a YOLO face box."""
     height, width = frame.shape[:2]

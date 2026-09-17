@@ -66,3 +66,5 @@ class Config:
     FACE_MINIMUM_ENROLLMENT_IMAGES = int(
         os.environ.get("FACE_MINIMUM_ENROLLMENT_IMAGES", "3")
     )
+    FACE_BLUR_THRESHOLD = float(os.environ.get("FACE_BLUR_THRESHOLD", "100.0"))
+    FACE_MINIMUM_FACE_SIZE = int(os.environ.get("FACE_MINIMUM_FACE_SIZE", "80"))

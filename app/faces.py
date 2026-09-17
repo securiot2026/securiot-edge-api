@@ -7,7 +7,7 @@ from PIL import Image, UnidentifiedImageError
 from werkzeug.utils import secure_filename
 
 from app.auth import require_admin_key
-from app.vision.enrollment import enroll_identity
+from app.vision.enrollment import enroll_identity, validate_capture_quality
 from app.vision.errors import VisionError
 from app.vision.settings import VisionSettings
 
@@ -56,8 +56,11 @@ def enroll_face():
                 return jsonify({"error": "invalid image data"}), 400
 
         settings = VisionSettings.from_mapping(current_app.config)
+        quality_valid_paths, quality_skipped = validate_capture_quality(
+            [Path(p) for p in temp_paths], settings
+        )
         try:
-            result = enroll_identity(name, [Path(p) for p in temp_paths], settings)
+            result = enroll_identity(name, quality_valid_paths, settings)
         except VisionError as exc:
             return jsonify({"error": str(exc)}), 400
 
@@ -67,7 +70,7 @@ def enroll_face():
                     "identity_path": str(result.identity_path),
                     "name": name,
                     "accepted_images": result.accepted_images,
-                    "skipped_images": list(result.skipped_images),
+                    "skipped_images": quality_skipped + list(result.skipped_images),
                 }
             ),
             201,

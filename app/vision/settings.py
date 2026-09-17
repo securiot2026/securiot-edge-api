@@ -35,6 +35,8 @@ class VisionSettings:
     similarity_threshold: float
     crop_margin: float
     minimum_enrollment_images: int
+    blur_threshold: float
+    minimum_face_size: int
 
     @classmethod
     def from_mapping(cls, config: Mapping[str, Any]) -> VisionSettings:
@@ -61,6 +63,8 @@ class VisionSettings:
             minimum_enrollment_images=int(
                 config.get("FACE_MINIMUM_ENROLLMENT_IMAGES", 3)
             ),
+            blur_threshold=float(config.get("FACE_BLUR_THRESHOLD", 100.0)),
+            minimum_face_size=int(config.get("FACE_MINIMUM_FACE_SIZE", 80)),
         )
         settings.validate()
         return settings
@@ -84,6 +88,10 @@ class VisionSettings:
             raise VisionError("FACE_YOLO_CLASS_ID cannot be negative.")
         if self.minimum_enrollment_images < 1:
             raise VisionError("FACE_MINIMUM_ENROLLMENT_IMAGES must be at least 1.")
+        if self.blur_threshold < 0.0:
+            raise VisionError("FACE_BLUR_THRESHOLD cannot be negative.")
+        if self.minimum_face_size < 1:
+            raise VisionError("FACE_MINIMUM_FACE_SIZE must be at least 1.")
         if not self.yolo_device:
             raise VisionError("FACE_YOLO_DEVICE cannot be empty.")
         if self.arcface_device not in {"auto", "cpu", "cuda", "coreml"}:

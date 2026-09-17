@@ -3,10 +3,11 @@ from flask import Flask
 from peewee import SqliteDatabase
 
 from app.config import Config
+from app.device_settings import device_settings_bp
 from app.faces import faces_bp
 from app.frames import frames_bp
 from app.ingest import ingest_bp
-from app.models import Reading, database_proxy
+from app.models import DeviceSetting, Reading, database_proxy
 from app.relay import relay_cycle
 
 
@@ -17,11 +18,12 @@ def create_app(config_object=Config, start_relay=True):
     database = SqliteDatabase(app.config["EDGE_DB_PATH"])
     database_proxy.initialize(database)
     database.connect(reuse_if_open=True)
-    database.create_tables([Reading])
+    database.create_tables([Reading, DeviceSetting])
 
     app.register_blueprint(ingest_bp)
     app.register_blueprint(frames_bp)
     app.register_blueprint(faces_bp)
+    app.register_blueprint(device_settings_bp)
 
     if start_relay:
         scheduler = BackgroundScheduler()

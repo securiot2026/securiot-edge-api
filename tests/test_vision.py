@@ -5,9 +5,12 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
+import app.vision.enrollment as enrollment_module
 from app.vision.detector import FaceDetection, YoloFaceDetector
 from app.vision.embedder import ArcFaceEmbedder, select_onnx_providers
+from app.vision.enrollment import validate_capture_quality
 from app.vision.errors import VisionError
+from app.vision.image import laplacian_variance
 from app.vision.service import FaceRecognitionService
 from app.vision.settings import VisionSettings
 from app.vision.storage import FaceIdentityStorage, IdentityDatabase
@@ -152,6 +155,69 @@ def test_service_marks_matches_above_threshold_as_known():
     assert recognitions[0].identity == "Ada"
     assert recognitions[0].known is True
     assert recognitions[0].similarity == pytest.approx(1.0)
+
+
+def test_laplacian_variance_zero_for_empty_crop_without_calling_cv2():
+    assert laplacian_variance(np.zeros((0, 0, 3), dtype=np.uint8)) == 0.0
+
+
+def test_laplacian_variance_uniform_color_is_zero_and_checkerboard_is_higher():
+    uniform = np.full((40, 40, 3), 120, dtype=np.uint8)
+    checkerboard = np.zeros((40, 40, 3), dtype=np.uint8)
+    checkerboard[::2, ::2] = 255
+    checkerboard[1::2, 1::2] = 255
+
+    uniform_score = laplacian_variance(uniform)
+    checkerboard_score = laplacian_variance(checkerboard)
+
+    assert uniform_score == 0.0
+    assert checkerboard_score > uniform_score
+
+
+def test_validate_capture_quality_reasons(tmp_path, monkeypatch):
+    paths = [tmp_path / f"img{i}.jpg" for i in range(5)]
+    for path in paths:
+        path.write_bytes(b"fake")
+
+    detector = Mock()
+    monkeypatch.setattr(
+        enrollment_module, "YoloFaceDetector", Mock(return_value=detector)
+    )
+
+    import cv2 as real_cv2
+
+    frame = np.full((200, 200, 3), 120, dtype=np.uint8)
+
+    checkerboard_frame = np.zeros((200, 200, 3), dtype=np.uint8)
+    checkerboard_frame[::2, ::2] = 255
+    checkerboard_frame[1::2, 1::2] = 255
+
+    detector.detect.side_effect = [
+        [],  # no face
+        [FaceDetection((10, 10, 30, 30), 0.9), FaceDetection((50, 50, 70, 70), 0.9)],  # two faces
+        [FaceDetection((10, 10, 20, 20), 0.9)],  # too small (10x10 < minimum_face_size)
+        [FaceDetection((10, 10, 150, 150), 0.9)],  # big enough, but blurry (uniform frame)
+        [FaceDetection((10, 10, 150, 150), 0.9)],  # passes
+    ]
+
+    settings = _settings(FACE_MINIMUM_FACE_SIZE=80, FACE_BLUR_THRESHOLD=100.0)
+
+    def fake_imread(path_str, flag):
+        if path_str == str(paths[4]):
+            return checkerboard_frame
+        return frame
+
+    monkeypatch.setattr(real_cv2, "imread", fake_imread)
+
+    valid_paths, skipped = validate_capture_quality(paths, settings)
+
+    assert valid_paths == [paths[4]]
+    assert skipped == [
+        f"{paths[0].name}: No face detected",
+        f"{paths[1].name}: Exactly one face is required",
+        f"{paths[2].name}: Move closer to the camera",
+        f"{paths[3].name}: Image is too blurry; hold still",
+    ]
 
 
 def test_service_returns_unknown_when_no_identities_are_enrolled():
