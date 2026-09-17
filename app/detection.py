@@ -12,6 +12,11 @@ import os
 DEFAULT_FRAME_WIDTH = 640
 DEFAULT_FRAME_HEIGHT = 480
 
+# RULE-07: weapon-detection condition reuses this existing COCO class, no
+# trained model of our own. Always allowed through the detector's class
+# filter, independent of ALLOWED_OBJECT_CLASS.
+WEAPON_CLASS_NAME = "knife"
+
 
 class MockDetector:
     """Filename-convention detector: inspects the path, not image bytes.
@@ -45,6 +50,16 @@ class MockDetector:
                 }
             ]
 
+        if WEAPON_CLASS_NAME in filename:
+            bbox = (280, 200, 360, 280)
+            return [
+                {
+                    "class_name": WEAPON_CLASS_NAME,
+                    "confidence": 0.85,
+                    "bbox": bbox,
+                }
+            ]
+
         return []
 
 
@@ -74,7 +89,11 @@ class YoloDetector:
 
                 class_id = int(cls)
                 class_name = self.model.names[class_id]
-                if class_name not in ("person", self.allowed_object_class):
+                if class_name not in (
+                    "person",
+                    self.allowed_object_class,
+                    WEAPON_CLASS_NAME,
+                ):
                     continue
 
                 x1, y1, x2, y2 = (float(v) for v in bbox)

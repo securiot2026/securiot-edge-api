@@ -69,3 +69,8 @@ class Config:
     )
     FACE_BLUR_THRESHOLD = float(os.environ.get("FACE_BLUR_THRESHOLD", "100.0"))
     FACE_MINIMUM_FACE_SIZE = int(os.environ.get("FACE_MINIMUM_FACE_SIZE", "80"))
+
+    # RULE-08: fire condition heuristic thresholds (no trained model, no new
+    # sensor — see app/fire_detection.py).
+    FIRE_MIN_PIXEL_RATIO = float(os.environ.get("FIRE_MIN_PIXEL_RATIO", "0.12"))
+    FIRE_MIN_BRIGHTNESS = float(os.environ.get("FIRE_MIN_BRIGHTNESS", "140.0"))

@@ -7,20 +7,16 @@ import uuid
 from flask import Blueprint, current_app, jsonify, request
 from PIL import Image, UnidentifiedImageError
 
-from app import debounce
+from app import debounce, occupancy
 from app.commands import manual_suppression_active, pop_deliverable_command
 from app.detection import DEFAULT_FRAME_HEIGHT, DEFAULT_FRAME_WIDTH, get_detector
 from app.device_settings import get_face_recognition_enabled
 from app.pan_tilt import compute_pan_tilt
 from app.reading_buffer import buffer_reading
+from app.rules_engine import dispatch, evaluate
 from app.vision import VisionError, get_face_recognizer
 
 frames_bp = Blueprint("frames", __name__)
-
-# device_id -> datetime of the last door_action fired. Module-level and
-# in-memory, matching app/debounce.py's accepted MVP limitation (resets on
-# restart, single-prototype-device scope).
-_last_door_action = {}
 
 # device_id -> bool, True once app/debounce.py has confirmed a detection
 # episode for this device and until a non-qualifying frame ends it. This
@@ -32,7 +28,13 @@ _active_episode = {}
 
 
 def _response_payload(
-    pan_delta, tilt_delta, door_action, alert, faces=None, manual_command=None
+    pan_delta,
+    tilt_delta,
+    door_action,
+    alert,
+    faces=None,
+    manual_command=None,
+    rule_command=None,
 ):
     payload = {
         "pan_delta": pan_delta,
@@ -40,15 +42,20 @@ def _response_payload(
         "door_action": door_action,
         "alert": alert,
         "manual_command": manual_command,
+        "rule_command": rule_command,
     }
     if faces is not None:
         payload["faces"] = [face.to_dict() for face in faces]
     return payload
 
 
-def _empty_response(faces=None, manual_command=None):
+def _empty_response(
+    faces=None, manual_command=None, rule_command=None, alert=False, door_action=None
+):
     return jsonify(
-        _response_payload(None, None, None, False, faces, manual_command)
+        _response_payload(
+            None, None, door_action, alert, faces, manual_command, rule_command
+        )
     )
 
 
@@ -62,12 +69,15 @@ def frames():
     zone_id = request.form.get("zone_id")
     frame_file = request.files.get("frame")
 
+    now = datetime.datetime.utcnow()
+
     # Preserve the uploaded filename on disk (not a random tempfile name):
     # MockDetector's test-only filename convention (used by automated tests
     # and scripts/run_test_folder.py) inspects the basename, not the bytes.
     tmp_dir = tempfile.mkdtemp()
     tmp_path = os.path.join(tmp_dir, frame_file.filename or "frame.jpg")
     face_recognitions = None
+    detections = []
     try:
         frame_file.save(tmp_path)
 
@@ -96,6 +106,19 @@ def frames():
                     jsonify({"error": "face recognition unavailable"}),
                     503,
                 )
+
+        # RULE-07/08: weapon and fire are severity conditions, evaluated on
+        # every frame independent of the person/object presence debounce
+        # below — a visible knife or fire is not something worth waiting
+        # two frames to react to. image_path must be read here, before the
+        # `finally` block below deletes it.
+        severity_matches = evaluate(
+            device_id,
+            now,
+            ("weapon", "fire"),
+            detections=detections,
+            image_path=tmp_path,
+        )
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
@@ -105,7 +128,6 @@ def frames():
     # of detection state (CTRL-04) — pop before any early-return path so an
     # operator's pan/tilt/light/buzzer command is never gated on a person
     # being in view.
-    now = datetime.datetime.utcnow()
     manual_command = pop_deliverable_command(device_id, now)
 
     allowed_object_class = current_app.config.get("ALLOWED_OBJECT_CLASS", "backpack")
@@ -115,19 +137,75 @@ def frames():
     top_detection = (
         max(qualifying, key=lambda d: d["confidence"]) if qualifying else None
     )
-
     qualifying_frame = bool(top_detection)
     result = debounce.record(device_id, qualifying=qualifying_frame)
 
-    if not qualifying_frame:
+    object_matches = []
+    if qualifying_frame:
+        if result["escalate"]:
+            _active_episode[device_id] = True
+            occupancy.record_entry_and_get_count(device_id, now)
+
+        if _active_episode.get(device_id, False):
+            object_matches = evaluate(
+                device_id,
+                now,
+                ("object_class", "occupancy"),
+                detections=detections,
+                occupancy_count=occupancy.get_count(device_id, now),
+            )
+    else:
         _active_episode[device_id] = False
+
+    matched_rules = sorted(
+        severity_matches + object_matches, key=lambda r: r.priority
+    )
+
+    if not matched_rules and not qualifying_frame:
+        # Nothing matched and nothing is in view: identical to the old
+        # early-return shape, still honoring any manual command/pending
+        # weapon-fire dispatch (there is none here, matched_rules is empty).
         return _empty_response(face_recognitions, manual_command), 200
 
-    if result["escalate"]:
-        _active_episode[device_id] = True
+    # CTRL-06: a manual command delivered for the "door" actuator (test-only
+    # public-API-inaccessible value, see app/commands.py) suppresses the
+    # rules engine's automatic door_lock action for the manual cooldown
+    # window — checked before dispatch so a suppressed rule never buffers a
+    # door_contact Reading or consumes its own per-rule cooldown.
+    suppress_door = manual_suppression_active(
+        device_id,
+        "door",
+        now,
+        current_app.config.get("DOOR_ACTION_COOLDOWN_SECONDS", 30),
+    )
+    dispatch_result = dispatch(
+        device_id,
+        zone_id,
+        matched_rules,
+        now,
+        manual_command=manual_command,
+        suppress_door=suppress_door,
+    )
+    door_action = dispatch_result["door_action"]
+    rule_command = dispatch_result["rule_command"]
+
+    if not qualifying_frame:
+        # Weapon/fire matched on a frame with no person/object in view:
+        # still dispatch (door lock / alert / rule_command above), but there
+        # is no pan/tilt tracking or camera_detection Reading to buffer.
+        return (
+            _empty_response(
+                face_recognitions,
+                manual_command,
+                rule_command,
+                alert=bool(matched_rules),
+                door_action=door_action,
+            ),
+            200,
+        )
 
     if not _active_episode.get(device_id, False):
-        return _empty_response(face_recognitions, manual_command), 200
+        return _empty_response(face_recognitions, manual_command, rule_command), 200
 
     pan_delta = tilt_delta = None
     # A manual pan/tilt command prevails over the same-cycle automatic
@@ -141,7 +219,6 @@ def frames():
             pan_delta = delta["pan_delta"]
             tilt_delta = delta["tilt_delta"]
 
-    recorded_at = datetime.datetime.utcnow()
     buffer_reading(
         reading_id=str(uuid.uuid4()),
         device_id=device_id,
@@ -153,34 +230,8 @@ def frames():
                 "confidence": top_detection["confidence"],
             }
         ),
-        recorded_at=recorded_at,
+        recorded_at=now,
     )
-
-    # The door only "closes" once per detection episode, not once per frame:
-    # while a person/object stays confirmed in view, every escalating frame
-    # keeps buffering a camera_detection reading (history) and keeps
-    # returning live pan/tilt (continuous tracking), but the door_contact
-    # Reading (and the door_action itself) only fires again once the
-    # cooldown window has elapsed for this device.
-    cooldown_seconds = current_app.config.get("DOOR_ACTION_COOLDOWN_SECONDS", 30)
-    last_fired = _last_door_action.get(device_id)
-    within_cooldown = (
-        last_fired is not None
-        and (recorded_at - last_fired).total_seconds() < cooldown_seconds
-    ) or manual_suppression_active(device_id, "door", recorded_at, cooldown_seconds)
-
-    door_action = None
-    if not within_cooldown:
-        buffer_reading(
-            reading_id=str(uuid.uuid4()),
-            device_id=device_id,
-            zone_id=zone_id,
-            sensor_type="door_contact",
-            value="open",
-            recorded_at=recorded_at,
-        )
-        _last_door_action[device_id] = recorded_at
-        door_action = "lock"
 
     return (
         jsonify(
@@ -191,6 +242,7 @@ def frames():
                 True,
                 face_recognitions,
                 manual_command,
+                rule_command,
             )
         ),
         200,
