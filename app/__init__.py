@@ -6,6 +6,7 @@ from app.commands import commands_bp
 from app.config import Config
 from app.device_settings import device_settings_bp
 from app.faces import faces_bp
+from app.frame_feed import frame_feed_bp
 from app.frames import frames_bp
 from app.ingest import ingest_bp
 from app.models import DeviceSetting, Reading, Rule, database_proxy
@@ -37,6 +38,7 @@ def create_app(config_object=Config, start_relay=True):
     app.register_blueprint(device_settings_bp)
     app.register_blueprint(commands_bp)
     app.register_blueprint(rules_bp)
+    app.register_blueprint(frame_feed_bp)
 
     if start_relay:
         scheduler = BackgroundScheduler()

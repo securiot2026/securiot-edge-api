@@ -11,6 +11,7 @@ from app import debounce, occupancy
 from app.commands import manual_suppression_active, pop_deliverable_command
 from app.detection import DEFAULT_FRAME_HEIGHT, DEFAULT_FRAME_WIDTH, get_detector
 from app.device_settings import get_face_recognition_enabled
+from app.frame_cache import store_latest_frame
 from app.pan_tilt import compute_pan_tilt
 from app.reading_buffer import buffer_reading
 from app.rules_engine import dispatch, evaluate
@@ -88,6 +89,17 @@ def frames():
                 img.verify()
         except (OSError, UnidentifiedImageError):
             return jsonify({"error": "invalid image data"}), 400
+
+        # FEED-03/04: cache the raw bytes as the device's latest frame before
+        # any detection/rules work below. `now` (computed above, synchronous
+        # with this request) is used as the capture timestamp — the frame
+        # arrives over the LAN in the same HTTP request, so this is a much
+        # closer proxy to "when the device took it" than the relay's later
+        # async forward-to-Cloud timestamp would be (the device itself has
+        # no synced RTC to stamp frames with). Overwrites any prior cached
+        # frame for this device_id — see app/frame_cache.py, no history kept.
+        with open(tmp_path, "rb") as cached_frame:
+            store_latest_frame(device_id, cached_frame.read(), now)
 
         detector = get_detector(current_app.config)
         try:
