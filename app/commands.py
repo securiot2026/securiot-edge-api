@@ -119,3 +119,59 @@ def manual_suppression_active(device_id, actuator, now, cooldown_seconds):
         delivered_at is not None
         and (now - delivered_at).total_seconds() < cooldown_seconds
     )
+
+
+# How long a delivered command still reads back as "delivered" to a client
+# polling for status (CTRL-05), instead of dropping to "none". Deliberately
+# short and separate from the door-cooldown window: this is UI feedback
+# freshness, not an actuation-suppression concern.
+_STATUS_RECENT_SECONDS = 15
+
+
+def command_status(device_id, actuator, now):
+    """Status of the most recent command issued for `actuator` on
+    `device_id`, for CTRL-05's pending -> entregado feedback:
+    - "pending": still queued, not yet popped by a /frames poll.
+    - "delivered": popped (and, if pan_tilt/light/buzzer, applied) within
+      the last _STATUS_RECENT_SECONDS.
+    - "none": no command ever issued, or it expired/aged out of the
+      "delivered" window without ever being marked delivered.
+    """
+    device_commands = _pending_commands.get(device_id, {})
+    entry = device_commands.get(actuator)
+    if entry is not None:
+        expiry_seconds = current_app.config.get("COMMAND_EXPIRY_SECONDS", 8)
+        if (now - entry["issued_at"]).total_seconds() < expiry_seconds:
+            return "pending"
+
+    delivered_at = _manual_command_delivered.get(device_id, {}).get(actuator)
+    if (
+        delivered_at is not None
+        and (now - delivered_at).total_seconds() < _STATUS_RECENT_SECONDS
+    ):
+        return "delivered"
+
+    return "none"
+
+
+@commands_bp.route("/commands/<device_id>/status", methods=["GET"])
+def get_command_status(device_id):
+    unauthorized = require_admin_key()
+    if unauthorized is not None:
+        return unauthorized
+
+    actuator = request.args.get("actuator")
+    if actuator not in ACTUATORS:
+        return (
+            jsonify({"error": f"actuator must be one of {list(ACTUATORS)}"}),
+            400,
+        )
+
+    now = datetime.datetime.utcnow()
+    return jsonify(
+        {
+            "device_id": device_id,
+            "actuator": actuator,
+            "status": command_status(device_id, actuator, now),
+        }
+    )

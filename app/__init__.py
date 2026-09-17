@@ -10,6 +10,7 @@ from app.frame_feed import frame_feed_bp
 from app.frames import frames_bp
 from app.ingest import ingest_bp
 from app.models import DeviceSetting, Reading, Rule, database_proxy
+from app.occupancy_feed import occupancy_feed_bp
 from app.relay import relay_cycle
 from app.rules_admin import rules_bp
 from app.rules_engine import seed_default_rules_if_empty
@@ -39,6 +40,7 @@ def create_app(config_object=Config, start_relay=True):
     app.register_blueprint(commands_bp)
     app.register_blueprint(rules_bp)
     app.register_blueprint(frame_feed_bp)
+    app.register_blueprint(occupancy_feed_bp)
 
     if start_relay:
         scheduler = BackgroundScheduler()

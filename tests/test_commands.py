@@ -110,3 +110,57 @@ def test_second_command_for_same_actuator_replaces_first(app, client):
 
         assert len(_pending_commands["dev-1"]) == 1
         assert _pending_commands["dev-1"]["buzzer"]["action"] == {"on": False}
+
+
+def test_status_is_none_when_no_command_ever_issued(app, client):
+    response = client.get(
+        "/commands/dev-1/status?actuator=light",
+        headers={"X-Admin-Key": "adminsecret"},
+    )
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "none"
+
+
+def test_status_is_pending_after_create_before_delivery(app, client):
+    client.post(
+        "/commands",
+        json={"device_id": "dev-1", "actuator": "buzzer", "action": {"on": True}},
+        headers={"X-Admin-Key": "adminsecret"},
+    )
+    response = client.get(
+        "/commands/dev-1/status?actuator=buzzer",
+        headers={"X-Admin-Key": "adminsecret"},
+    )
+    assert response.get_json()["status"] == "pending"
+
+
+def test_status_is_delivered_after_frames_pops_it(app, client):
+    from app.commands import pop_deliverable_command
+    import datetime
+
+    client.post(
+        "/commands",
+        json={"device_id": "dev-1", "actuator": "buzzer", "action": {"on": True}},
+        headers={"X-Admin-Key": "adminsecret"},
+    )
+    with app.app_context():
+        pop_deliverable_command("dev-1", datetime.datetime.utcnow())
+
+    response = client.get(
+        "/commands/dev-1/status?actuator=buzzer",
+        headers={"X-Admin-Key": "adminsecret"},
+    )
+    assert response.get_json()["status"] == "delivered"
+
+
+def test_status_rejects_unknown_actuator(app, client):
+    response = client.get(
+        "/commands/dev-1/status?actuator=siren",
+        headers={"X-Admin-Key": "adminsecret"},
+    )
+    assert response.status_code == 400
+
+
+def test_status_requires_admin_key(app, client):
+    response = client.get("/commands/dev-1/status?actuator=light")
+    assert response.status_code == 401
