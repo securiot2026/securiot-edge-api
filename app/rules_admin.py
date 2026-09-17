@@ -4,12 +4,14 @@ exist and work, admin-key gated like the other operator endpoints added in
 Phase 06.1/7 (POST /faces, /devices/<id>/face-recognition, POST /commands).
 """
 
+import datetime
 import json
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 from app.auth import require_admin_key
 from app.models import Rule
+from app.rules_engine import dispatch
 
 rules_bp = Blueprint("rules", __name__)
 
@@ -165,3 +167,35 @@ def delete_rule(rule_id):
 
     rule.delete_instance()
     return "", 204
+
+
+@rules_bp.route("/rules/<int:rule_id>/dry-run", methods=["POST"])
+def dry_run_rule(rule_id):
+    """RULE-11: let the operator test a rule's configured action without
+    waiting for a real detection. Reuses app/rules_engine.py's dispatch() —
+    the same single action-dispatch path /frames and /ingest already go
+    through — so a dry-run genuinely exercises the configured action
+    (door_lock / light / buzzer / alert), not a simulated summary of it.
+    Cooldown is intentionally bypassed (an explicit manual test), but the
+    rule's last_triggered_at IS updated, same as a real trigger."""
+    unauthorized = require_admin_key()
+    if unauthorized is not None:
+        return unauthorized
+
+    rule = Rule.get_or_none(Rule.id == rule_id)
+    if rule is None:
+        return jsonify({"error": "rule not found"}), 404
+    if not rule.enabled:
+        return jsonify({"error": "cannot dry-run a disabled rule"}), 400
+
+    now = datetime.datetime.utcnow()
+    result = dispatch(
+        rule.device_id,
+        None,
+        [rule],
+        now,
+        manual_command=None,
+        suppress_door=False,
+    )
+    current_app.logger.info("Dry-run fired rule %s (%s)", rule.id, rule.name)
+    return jsonify({"rule": _rule_to_dict(rule), "result": result}), 200

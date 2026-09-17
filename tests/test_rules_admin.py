@@ -109,3 +109,55 @@ def test_update_missing_rule_returns_404(client):
         "/rules/999999", json={"enabled": False}, headers=ADMIN_HEADERS
     )
     assert response.status_code == 404
+
+
+def test_dry_run_requires_admin_key(client):
+    assert client.post("/rules/1/dry-run").status_code == 401
+
+
+def test_dry_run_missing_rule_returns_404(client):
+    response = client.post("/rules/999999/dry-run", headers=ADMIN_HEADERS)
+    assert response.status_code == 404
+
+
+def test_dry_run_fires_alert_action_and_updates_last_triggered(app, client):
+    with app.app_context():
+        created = client.post(
+            "/rules",
+            json={
+                "name": "Manual test alert",
+                "condition_type": "sensor_threshold",
+                "operator": ">",
+                "sensor_type": "temperature",
+                "match_value": "40",
+                "actions": [{"type": "alert", "severity": "high"}],
+            },
+            headers=ADMIN_HEADERS,
+        )
+        rule_id = created.get_json()["id"]
+        assert created.get_json()["last_triggered_at"] is None
+
+        response = client.post(f"/rules/{rule_id}/dry-run", headers=ADMIN_HEADERS)
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body["rule"]["last_triggered_at"] is not None
+        assert Rule.get_by_id(rule_id).last_triggered_at is not None
+
+
+def test_dry_run_rejects_disabled_rule(app, client):
+    with app.app_context():
+        created = client.post(
+            "/rules",
+            json={
+                "name": "Disabled rule",
+                "condition_type": "object_class",
+                "match_value": "person",
+                "actions": [{"type": "door_lock"}],
+                "enabled": False,
+            },
+            headers=ADMIN_HEADERS,
+        )
+        rule_id = created.get_json()["id"]
+
+        response = client.post(f"/rules/{rule_id}/dry-run", headers=ADMIN_HEADERS)
+        assert response.status_code == 400
