@@ -17,6 +17,10 @@ def _env_bool(name, default=False):
 class Config:
     EDGE_DB_PATH = os.environ.get("EDGE_DB_PATH", "edge.db")
     DEVICE_SHARED_SECRET = os.environ.get("DEVICE_SHARED_SECRET", "")
+    EDGE_ADMIN_API_KEY = os.environ.get("EDGE_ADMIN_API_KEY", "")
+    FACE_ENROLLMENT_MAX_CONTENT_LENGTH = int(
+        os.environ.get("FACE_ENROLLMENT_MAX_CONTENT_LENGTH", str(10 * 1024 * 1024))
+    )
     CLOUD_API_URL = os.environ.get("CLOUD_API_URL", "http://localhost:5000")
     CLOUD_DEVICE_API_KEY = os.environ.get("CLOUD_DEVICE_API_KEY", "")
     RELAY_INTERVAL_SECONDS = int(os.environ.get("RELAY_INTERVAL_SECONDS", "10"))
