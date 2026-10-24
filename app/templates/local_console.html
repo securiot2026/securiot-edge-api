@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>SecurIoT · Local Edge Console</title>
+  <style nonce="{{ token }}">
+    :root{color-scheme:dark;--bg:#0b121b;--panel:#111e2b;--line:#253749;--text:#edf3f8;--muted:#9bafc0;--mint:#91e5cc;--warn:#f2be79}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 "Avenir Next",Avenir,sans-serif}
+    button,input{font:inherit}button,a,input{outline-offset:4px}button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--mint)}
+    button{cursor:pointer;border:1px solid var(--line);border-radius:8px;background:#1b3043;color:var(--text);padding:10px 16px;min-height:44px}
+    button:disabled{cursor:wait;opacity:.6}button:hover:not(:disabled){border-color:var(--mint)}a{color:var(--mint)}
+    header{max-width:1440px;margin:auto;padding:28px 36px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line)}
+    .brand{font-size:24px;font-weight:700;letter-spacing:-1px}.brand span{color:var(--mint)}.eyebrow{font:11px/1.5 Menlo,monospace;letter-spacing:2px;text-transform:uppercase;color:var(--muted)}
+    .local{font:12px Menlo,monospace;color:var(--mint);padding:8px 12px;background:#132e2a;border:1px solid #285446;border-radius:20px}
+    main{max-width:1440px;margin:auto;padding:32px 36px}.intro{display:flex;align-items:end;justify-content:space-between;gap:16px;margin-bottom:28px}
+    h1{font-size:32px;letter-spacing:-1px;line-height:1.2;margin:8px 0}h2{font-size:19px;margin:0 0 8px}p{margin:8px 0;color:var(--muted)}
+    .layout{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:24px;align-items:start}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+    .panel-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:20px 24px;border-bottom:1px solid var(--line)}
+    .tag{font:11px Menlo,monospace;color:var(--muted)}.camera{position:relative;aspect-ratio:4/3;background:#05090f}
+    .camera img{display:block;width:100%;height:100%;object-fit:contain}.camera svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+    .camera-tools{padding:14px 24px;display:flex;gap:12px;justify-content:space-between;align-items:center;border-top:1px solid var(--line)}
+    .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);margin-top:24px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+    .metric{background:var(--panel);padding:18px 24px}.value{font:26px/1.5 Menlo,monospace;margin-top:6px}.caption{font-size:12px;color:var(--muted)}
+    .side-content{padding:24px}.form-intro{font-size:13px;margin-bottom:20px}label.field-label{display:block;margin:16px 0 7px;font-weight:600}
+    input[type=text]{width:100%;border:1px solid #385065;border-radius:8px;padding:12px;background:#0b1724;color:var(--text)}
+    .check{display:flex;align-items:start;gap:10px;font-size:13px;color:var(--muted);margin:18px 0}.check input{margin-top:4px;accent-color:var(--mint);width:17px;height:17px;flex-shrink:0}
+    .primary{width:100%;background:var(--mint);border-color:var(--mint);color:#0b2520;font-weight:700;margin-top:6px}
+    .notice{font-size:13px;padding:12px 14px;border-left:2px solid var(--mint);background:#102923;color:#c0e6dc;margin-top:20px}.error{color:var(--warn)}
+    .identities{border-top:1px solid var(--line);padding:20px 24px}.identities ul{list-style:none;margin:16px 0 0;padding:0}.identities li{padding:8px 0;border-top:1px solid var(--line)}
+    .face-list{padding:20px 24px;margin-top:24px}.face-list ul{list-style:none;padding:0;margin:12px 0 0;display:flex;gap:10px;flex-wrap:wrap}.face-list li{border:1px solid var(--line);border-radius:8px;padding:10px 14px}
+    footer{margin-top:28px;font-size:12px;color:var(--muted);border-top:1px solid var(--line);padding-top:20px}.connection{font-size:13px;color:var(--warn)}.good{color:var(--mint)}
+    @media(max-width:1050px){.layout{grid-template-columns:minmax(0,1fr) 320px}main,header{padding:24px}}
+    @media(max-width:800px){.layout{grid-template-columns:1fr}.intro{align-items:start;flex-direction:column}h1{font-size:28px}.metric{padding:16px}.value{font-size:21px}.camera-tools{align-items:start;flex-direction:column}main,header{padding:20px}}
+  </style>
+</head>
+<body>
+<header><div class="brand">Secur<span>IoT</span> <span class="eyebrow">/ Edge console</span></div><span class="local">LOCAL ONLY</span></header>
+<main>
+  <div class="intro"><div><div class="eyebrow">Physical camera / Local inference</div><h1>See the camera. Know the result.</h1><p>ESP32-CAM → Edge API → YOLO + ArcFace. No cloud connection required.</p></div><span id="connection" class="connection" role="status">Connecting to the ESP32…</span></div>
+  <div class="layout">
+    <section aria-labelledby="camera-heading">
+      <div class="panel">
+        <div class="panel-head"><div><h2 id="camera-heading">Live camera</h2><span class="tag">ESP32CAM-01 · ZONE-01</span></div><span class="tag">640 × 480</span></div>
+        <div class="camera"><img id="feed" alt="Live camera view from the connected ESP32" width="640" height="480"><svg id="boxes" viewBox="0 0 640 480" aria-hidden="true"></svg></div>
+        <div class="camera-tools"><span id="view-mode" class="caption">Full-rate MJPEG · analysis runs separately</span><button type="button" id="mode-toggle">Use processed view</button></div>
+      </div>
+      <div class="metrics" aria-label="Edge processing metrics">
+        <div class="metric"><div class="eyebrow">Processed frames</div><div class="value" id="frame-count">—</div><div class="caption">Real /frames responses</div></div>
+        <div class="metric"><div class="eyebrow">Analysis latency</div><div class="value" id="latency">—</div><div class="caption">Detection + recognition</div></div>
+        <div class="metric"><div class="eyebrow">Faces in frame</div><div class="value" id="face-count">—</div><div class="caption">YOLO face detections</div></div>
+      </div>
+      <section class="panel face-list" aria-labelledby="recognition-heading"><h2 id="recognition-heading">Recognition results</h2><p id="no-faces">Waiting for the first analysis.</p><ul id="faces"></ul></section>
+    </section>
+    <aside class="panel" id="enrollment" aria-labelledby="enrollment-heading">
+      <div class="panel-head"><div><div class="eyebrow">Local identity database</div><h2 id="enrollment-heading">Register a face</h2></div></div>
+      <div class="side-content"><p class="form-intro">Stand in front of the ESP32 with only one face visible. We capture five samples; slowly vary your angle while keeping your face well lit.</p>
+        <form id="enroll-form">
+          <label class="field-label" for="name">Display name</label><input id="name" name="name" type="text" maxlength="80" placeholder="Name to recognize" autocomplete="off" required>
+          <label class="check"><input id="consent" type="checkbox" required><span>I have explicit consent from the person being registered to store their face embeddings locally.</span></label>
+          <label class="check"><input id="replace" type="checkbox"><span>Replace an existing identity with this name.</span></label>
+          <button class="primary" id="register" type="submit">Capture & register face</button>
+        </form>
+        <p id="enroll-message" role="status" class="notice">Nothing is registered automatically. Enrollment starts only when you confirm.</p>
+      </div>
+      <div class="identities"><h2>Registered identities</h2><p class="caption">Only embeddings remain on this Mac. Temporary capture images are deleted.</p><ul id="identities"><li>No identities registered.</li></ul></div>
+    </aside>
+  </div>
+  <footer>Local research prototype · Not an access-control or anti-spoofing system. No servo or door actions are sent to the device. Video stays on your local network. <a href="{{ camera_url }}" target="_blank" rel="noopener">Open the ESP32 viewer</a></footer>
+</main>
+<script nonce="{{ token }}">
+const token={{ token|tojson }},streamUrl={{ stream_url|tojson }};
+const byId=id=>document.getElementById(id),feed=byId('feed');
+let fullRate=true,busy=false;
+function video(){
+  feed.removeAttribute('src');
+  if(document.hidden)return;
+  feed.src=fullRate?streamUrl+'?t='+Date.now():'/console/frame.jpg?t='+Date.now();
+  byId('mode-toggle').textContent=fullRate?'Use processed view':'Use full-rate video';
+  byId('view-mode').textContent=fullRate?'Full-rate MJPEG · analysis runs separately':'Processed preview · latest frame sent to the Edge';
+}
+byId('mode-toggle').onclick=()=>{fullRate=!fullRate;video()};
+document.addEventListener('visibilitychange',video);
+feed.onerror=()=>{if(fullRate){fullRate=false;video()}};
+setTimeout(()=>{if(fullRate&&!feed.naturalWidth){fullRate=false;video()}},6000);
+function drawFaces(faces){
+  const list=byId('faces'),boxes=byId('boxes');list.replaceChildren();boxes.replaceChildren();
+  byId('no-faces').hidden=faces.length>0;
+  byId('no-faces').textContent='No faces detected. Move closer to the ESP32 to register.';
+  for(const face of faces){
+    const label=face.known?face.identity:'Unknown face',color=face.known?'#91e5cc':'#f2be79';
+    const item=document.createElement('li');
+    item.textContent=label+(face.similarity===null?'':' · similarity '+face.similarity.toFixed(2));list.append(item);
+    const [x1,y1,x2,y2]=face.bbox,ns='http://www.w3.org/2000/svg';
+    const rect=document.createElementNS(ns,'rect');
+    for(const [key,value] of Object.entries({x:x1,y:y1,width:x2-x1,height:y2-y1,fill:'none',stroke:color,'stroke-width':2}))rect.setAttribute(key,value);
+    const text=document.createElementNS(ns,'text');text.setAttribute('x',x1+4);text.setAttribute('y',Math.max(18,y1-7));text.setAttribute('fill',color);text.setAttribute('font-size',16);text.textContent=label;boxes.append(rect,text);
+  }
+}
+async function identities(){
+  try{const response=await fetch('/console/identities');if(!response.ok)return;const data=await response.json();
+    const list=byId('identities');list.replaceChildren();
+    for(const name of data.names){const item=document.createElement('li');item.textContent=name;list.append(item)}
+    if(!data.names.length){const item=document.createElement('li');item.textContent='No identities registered.';list.append(item)}
+  }catch{}
+}
+async function poll(){
+  try{
+    if(!document.hidden){const response=await fetch('/console/status',{signal:AbortSignal.timeout(5000)});if(!response.ok)throw Error('Edge unavailable');const data=await response.json();
+      byId('frame-count').textContent=data.frames_processed.toLocaleString();byId('latency').textContent=data.inference_ms===null?'—':data.inference_ms+' ms';
+      const faces=data.result.faces||[];byId('face-count').textContent=faces.length;drawFaces(faces);
+      const connection=byId('connection');connection.classList.toggle('good',data.connected&&!data.error);
+      connection.textContent=data.enrolling?'Enrollment in progress':data.error||(data.connected?'ESP32 connected · Edge processing':'Waiting for the ESP32 and models…');
+      if(!fullRate&&data.frames_processed)feed.src='/console/frame.jpg?t='+Date.now();
+    }
+  }catch{byId('connection').textContent='Edge unavailable. Retrying…';byId('connection').classList.remove('good')}
+  finally{setTimeout(poll,750)}
+}
+byId('enroll-form').onsubmit=async event=>{
+  event.preventDefault();if(busy)return;busy=true;
+  const button=byId('register'),message=byId('enroll-message');button.disabled=true;button.textContent='Capturing & computing…';message.classList.remove('error');
+  message.textContent='Keep one face visible. Capturing fresh images and computing local embeddings…';
+  try{
+    const response=await fetch('/console/enroll',{method:'POST',headers:{'Content-Type':'application/json','X-Console-Token':token},body:JSON.stringify({name:byId('name').value,consent:byId('consent').checked,replace:byId('replace').checked})});
+    const data=await response.json();if(!response.ok)throw Error(data.error||'Enrollment failed');
+    message.textContent='Registered '+data.name+' from '+data.accepted_images+' valid images. Recognition will refresh automatically.';
+    byId('consent').checked=false;byId('replace').checked=false;await identities();
+  }catch(error){message.textContent=error.message;message.classList.add('error')}
+  finally{busy=false;button.disabled=false;button.textContent='Capture & register face'}
+};
+video();identities();poll();
+</script>
+</body>
+</html>

@@ -4,6 +4,11 @@ Flask + Peewee + SQLite edge service. It buffers sensor readings locally the
 moment a device posts them, then a background relay forwards them to the
 Cloud API with retry/backoff so a connectivity interruption never loses data.
 
+For the local ESP32-CAM demo, start with
+[Local console and face enrollment](docs/LOCAL_CONSOLE.md). It runs the
+Edge API and monitoring UI on `127.0.0.1:5050`, preserves the embedded
+MJPEG preview, and does not enable cloud relay or physical actuator control.
+
 ## Where this runs
 
 This service runs on a machine local to the installation site, on the same
@@ -363,7 +368,32 @@ or wrong `X-Device-Key` returns `401`.
    one row per `reading_id` (no duplicates), since forwarding is idempotent
    on `reading_id`.
 
-## Tests
+## Local ESP32 console and face enrollment
+
+Follow the [complete local console guide](docs/LOCAL_CONSOLE.md) to install
+dependencies, provide model weights, and configure `.env`. Then run:
+
+```bash
+python scripts/run_local_console.py --camera-url http://172.20.10.2 --port 5050
+```
+
+Open `http://127.0.0.1:5050/`. This opt-in launcher runs the existing Edge API
+and a loopback-only monitoring/enrollment interface. A local bridge pulls
+JPEGs from the camera and submits them to the authenticated `/frames`
+contract. It preserves the ESP32's preview firmware and never sends servo
+or door commands back to the device. Cloud relay is disabled for this mode.
+The page can display the full-rate camera stream or the latest analyzed
+snapshot. Detection runs independently of video FPS.
+
+Enrollment requires an explicit consent checkbox and a name. Five fresh
+camera images are temporarily captured (with the default three-image
+minimum), processed by the existing enrollment pipeline, then deleted.
+Only local identity embeddings remain in the ignored `data/faces/` folder.
+Existing identities are not replaced unless explicitly confirmed. This
+research prototype has no liveness verification and must not be used for
+security-sensitive access decisions. Keep the local server bound to loopback.
+
+## Automated tests
 
 ```bash
 python -m pytest
