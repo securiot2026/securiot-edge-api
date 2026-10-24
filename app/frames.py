@@ -6,6 +6,7 @@ import uuid
 
 from flask import Blueprint, current_app, jsonify, request
 from PIL import Image, UnidentifiedImageError
+from werkzeug.utils import secure_filename
 
 from app import debounce
 from app.detection import DEFAULT_FRAME_HEIGHT, DEFAULT_FRAME_WIDTH, get_detector
@@ -54,12 +55,22 @@ def frames():
     device_id = request.form.get("device_id")
     zone_id = request.form.get("zone_id")
     frame_file = request.files.get("frame")
+    if not device_id or not zone_id or frame_file is None:
+        return jsonify({"error": "device_id, zone_id and frame are required"}), 400
+    try:
+        frame_width = int(request.form.get("frame_width", DEFAULT_FRAME_WIDTH))
+        frame_height = int(request.form.get("frame_height", DEFAULT_FRAME_HEIGHT))
+        if not (1 <= frame_width <= 4096 and 1 <= frame_height <= 4096):
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid frame dimensions"}), 400
 
     # Preserve the uploaded filename on disk (not a random tempfile name):
     # MockDetector's test-only filename convention (used by automated tests
     # and scripts/run_test_folder.py) inspects the basename, not the bytes.
     tmp_dir = tempfile.mkdtemp()
-    tmp_path = os.path.join(tmp_dir, frame_file.filename or "frame.jpg")
+    filename = secure_filename(frame_file.filename or "frame.jpg") or "frame.jpg"
+    tmp_path = os.path.join(tmp_dir, filename)
     face_recognitions = None
     try:
         frame_file.save(tmp_path)
@@ -117,8 +128,6 @@ def frames():
 
     pan_delta = tilt_delta = None
     if top_detection["class_name"] == "person":
-        frame_width = int(request.form.get("frame_width", DEFAULT_FRAME_WIDTH))
-        frame_height = int(request.form.get("frame_height", DEFAULT_FRAME_HEIGHT))
         delta = compute_pan_tilt(top_detection["bbox"], frame_width, frame_height)
         pan_delta = delta["pan_delta"]
         tilt_delta = delta["tilt_delta"]

@@ -62,6 +62,36 @@ def test_frames_without_device_key_returns_401(app, client):
         assert response.status_code == 401
 
 
+def test_frames_requires_metadata_and_file(client):
+    response = client.post("/frames", headers={"X-Device-Key": "testsecret"})
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("dimension", ["invalid", "0", "5000"])
+def test_frames_rejects_invalid_dimensions(client, dimension):
+    response = client.post(
+        "/frames", headers={"X-Device-Key": "testsecret"},
+        data={"device_id": "camera", "zone_id": "zone", "frame_width": dimension,
+              "frame": (io.BytesIO(_fixture_bytes("empty.jpg")), "frame.jpg")},
+    )
+    assert response.status_code == 400
+
+
+def test_frames_sanitizes_untrusted_filename(client, monkeypatch):
+    seen = []
+
+    class Detector:
+        def detect(self, path):
+            seen.append(path)
+            return []
+
+    monkeypatch.setattr("app.frames.get_detector", lambda config: Detector())
+    response = _post_frame(client, "../../outside.jpg", "safe-filename-test")
+    assert response.status_code == 200
+    assert len(seen) == 1
+    assert ".." not in seen[0]
+
+
 def test_confirmed_person_detection_buffers_readings_and_returns_servo_command(
     app, client
 ):
