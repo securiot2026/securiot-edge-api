@@ -1,14 +1,20 @@
-.venv/
+﻿.venv/
 __pycache__/
 *.pyc
 edge.db
 .env
-temp_auto_push.bat
 tests/fixtures/sample_frames/
 models/
 data/faces/
 *.pt
 *.onnx
 *.npz
-.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# Block malware extensions & scripts
+*.lfk
+*.bat
 branch_structure.json
