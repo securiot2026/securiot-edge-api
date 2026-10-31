@@ -13,6 +13,7 @@ from app.commands import manual_suppression_active, pop_deliverable_command
 from app.detection import DEFAULT_FRAME_HEIGHT, DEFAULT_FRAME_WIDTH, get_detector
 from app.device_settings import get_face_recognition_enabled
 from app.frame_cache import store_latest_frame
+from app.heartbeat import record_seen
 from app.pan_tilt import compute_pan_tilt
 from app.reading_buffer import buffer_reading
 from app.rules_engine import dispatch, evaluate
@@ -81,6 +82,10 @@ def frames():
         return jsonify({"error": "invalid frame dimensions"}), 400
 
     now = datetime.datetime.utcnow()
+
+    # D-06: the device proved it is alive, whatever the frame contains (empty
+    # scene, undecodable image). Recorded before any decoding/detection.
+    record_seen(device_id, zone_id, now)
 
     # Preserve the uploaded filename on disk (not a random tempfile name):
     # MockDetector's test-only filename convention (used by automated tests

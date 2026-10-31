@@ -8,6 +8,7 @@ from app.device_settings import device_settings_bp
 from app.faces import faces_bp
 from app.frame_feed import frame_feed_bp
 from app.frames import frames_bp
+from app.heartbeat import heartbeat_cycle
 from app.ingest import ingest_bp
 from app.models import DeviceSetting, Reading, Rule, database_proxy
 from app.occupancy_feed import occupancy_feed_bp
@@ -58,4 +59,13 @@ def create_app(config_object=Config, start_relay=True):
 
 def _run_relay_cycle(app):
     with app.app_context():
-        relay_cycle()
+        # Independent try/excepts: a heartbeat failure must never block the
+        # relay and vice versa.
+        try:
+            relay_cycle()
+        except Exception:
+            app.logger.exception("relay cycle failed")
+        try:
+            heartbeat_cycle()
+        except Exception:
+            app.logger.exception("heartbeat cycle failed")
