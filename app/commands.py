@@ -23,6 +23,10 @@ _pending_commands = {}
 # in 07-RESEARCH.md — "door" is not a value accepted by create_command()).
 _manual_command_delivered = {}
 
+# How long a rule effect queued by an explicit dry-run (execute true) keeps the
+# light/buzzer on at the device. Shared contract with the firmware (12-03).
+DRY_RUN_EFFECT_DURATION_SECONDS = 5
+
 
 def _validate_action(actuator, action):
     if actuator == "pan_tilt":
@@ -75,6 +79,33 @@ def create_command():
         ),
         201,
     )
+
+
+def enqueue_rule_effects(device_id, result, now):
+    """Internal (dry-run execute only): turn a rules_engine.dispatch() result
+    into pending manual-queue entries and return the queued actuator names.
+
+    Entries are stored exactly like create_command does, so expiry, delivery
+    and status keep working. "door_lock" is deliberately NOT in the public
+    ACTUATORS tuple: this helper is its only producer and is reachable only
+    from the admin-gated dry-run route.
+    """
+    queued = []
+    device_commands = _pending_commands.setdefault(device_id, {})
+
+    rule_command = result.get("rule_command")
+    if rule_command and rule_command.get("actuator") in ("light", "buzzer"):
+        actuator = rule_command["actuator"]
+        action = {"on": True, **(rule_command.get("action") or {})}
+        action["duration_s"] = DRY_RUN_EFFECT_DURATION_SECONDS
+        device_commands[actuator] = {"action": action, "issued_at": now}
+        queued.append(actuator)
+
+    if result.get("door_action") == "lock":
+        device_commands["door_lock"] = {"action": {}, "issued_at": now}
+        queued.append("door_lock")
+
+    return queued
 
 
 def pop_deliverable_command(device_id, now):

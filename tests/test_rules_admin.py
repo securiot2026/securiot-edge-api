@@ -5,6 +5,7 @@ import uuid
 import pytest
 
 from app import create_app
+from app.commands import _manual_command_delivered, _pending_commands, pop_deliverable_command
 from app.models import Reading, Rule
 
 
@@ -18,6 +19,16 @@ class FakeConfig:
     DETECTION_BACKEND = "mock"
     ALLOWED_OBJECT_CLASS = "backpack"
     DOOR_ACTION_COOLDOWN_SECONDS = 30
+    COMMAND_EXPIRY_SECONDS = 8
+
+
+@pytest.fixture(autouse=True)
+def _clear_command_state():
+    _pending_commands.clear()
+    _manual_command_delivered.clear()
+    yield
+    _pending_commands.clear()
+    _manual_command_delivered.clear()
 
 
 @pytest.fixture
@@ -342,3 +353,122 @@ def test_dry_run_rejects_disabled_rule(app, client):
 
         response = client.post(f"/rules/{rule_id}/dry-run", headers=ADMIN_HEADERS)
         assert response.status_code == 400
+
+
+IDENT = {"device_id": "dev-1", "zone_id": "zone-9"}
+
+
+def test_dry_run_default_does_not_enqueue_commands(app, client):
+    with app.app_context():
+        rule_id = _create_rule(
+            client,
+            name="Light test",
+            actions=[{"type": "light", "color": "red"}],
+        )
+
+        for body in (dict(IDENT), {**IDENT, "execute": False}):
+            response = _dry_run(client, rule_id, body)
+            assert response.status_code == 200
+            data = response.get_json()
+            assert data["executed"] is False
+            assert data["queued"] == []
+        assert _pending_commands.get("dev-1", {}) == {}
+
+
+def test_dry_run_execute_light_queues_light_command(app, client):
+    with app.app_context():
+        rule_id = _create_rule(
+            client,
+            name="Light test",
+            actions=[{"type": "light", "color": "red"}],
+        )
+
+        response = _dry_run(client, rule_id, {**IDENT, "execute": True})
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["executed"] is True
+        assert data["queued"] == ["light"]
+        entry = _pending_commands["dev-1"]["light"]
+        assert entry["action"] == {"on": True, "color": "red", "duration_s": 5}
+
+
+def test_dry_run_execute_buzzer_queues_buzzer_command(app, client):
+    with app.app_context():
+        rule_id = _create_rule(
+            client, name="Buzzer test", actions=[{"type": "buzzer"}]
+        )
+
+        response = _dry_run(client, rule_id, {**IDENT, "execute": True})
+        assert response.status_code == 200
+        assert response.get_json()["queued"] == ["buzzer"]
+        assert _pending_commands["dev-1"]["buzzer"]["action"] == {
+            "on": True,
+            "duration_s": 5,
+        }
+
+
+def test_dry_run_execute_door_lock_queues_door_lock_command(app, client):
+    with app.app_context():
+        rule_id = _create_rule(
+            client,
+            name="Door test",
+            condition_type="object_class",
+            operator=None,
+            sensor_type=None,
+            match_value="person",
+            actions=[{"type": "door_lock"}],
+        )
+
+        response = _dry_run(client, rule_id, {**IDENT, "execute": True})
+        assert response.status_code == 200
+        assert response.get_json()["queued"] == ["door_lock"]
+        assert _pending_commands["dev-1"]["door_lock"]["action"] == {}
+
+
+def test_dry_run_queued_command_is_deliverable_like_manual_command(app, client):
+    with app.app_context():
+        rule_id = _create_rule(
+            client, name="Buzzer test", actions=[{"type": "buzzer"}]
+        )
+        _dry_run(client, rule_id, {**IDENT, "execute": True})
+
+        delivered = pop_deliverable_command("dev-1", datetime.datetime.utcnow())
+        assert delivered["actuator"] == "buzzer"
+        assert delivered["action"] == {"on": True, "duration_s": 5}
+        assert "issued_at" in delivered
+
+
+@pytest.mark.parametrize("execute", ["true", 1, 0, "yes", [], {}])
+def test_dry_run_non_boolean_execute_is_400_and_queues_nothing(app, client, execute):
+    with app.app_context():
+        rule_id = _create_rule(
+            client, name="Buzzer test", actions=[{"type": "buzzer"}]
+        )
+
+        response = _dry_run(client, rule_id, {**IDENT, "execute": execute})
+        assert response.status_code == 400
+        assert "execute" in response.get_json()["error"]
+        assert _pending_commands.get("dev-1", {}) == {}
+        assert Reading.select().count() == 0
+
+
+def test_dry_run_execute_alert_only_rule_queues_nothing(app, client):
+    with app.app_context():
+        rule_id = _create_rule(client)
+
+        response = _dry_run(client, rule_id, {**IDENT, "execute": True})
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["executed"] is True
+        assert data["queued"] == []
+        assert _pending_commands.get("dev-1", {}) == {}
+
+
+def test_public_commands_endpoint_still_rejects_door_lock(client):
+    response = client.post(
+        "/commands",
+        json={"device_id": "dev-1", "actuator": "door_lock", "action": {}},
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 400
+    assert _pending_commands.get("dev-1", {}) == {}

@@ -10,6 +10,7 @@ import json
 from flask import Blueprint, current_app, jsonify, request
 
 from app.auth import require_admin_key
+from app.commands import enqueue_rule_effects
 from app.models import Reading, Rule
 from app.rules_engine import dispatch
 
@@ -195,7 +196,10 @@ def dry_run_rule(rule_id):
 
     Cooldown is intentionally bypassed (an explicit manual test) and the
     rule's last_triggered_at is left untouched: RULE-10 reflects only real
-    triggers. The alert Reading carries a dry-run marker."""
+    triggers. The alert Reading carries a dry-run marker.
+
+    No device command is queued unless the body sends execute: true; then the
+    light/buzzer/door_lock effects go through the manual-command queue."""
     unauthorized = require_admin_key()
     if unauthorized is not None:
         return unauthorized
@@ -218,6 +222,11 @@ def dry_run_rule(rule_id):
     body_zone_id, error = _identity_field(body, "zone_id")
     if error:
         return jsonify({"error": error}), 400
+
+    # Explicit opt-in to touch the device (D-04): only an exact JSON boolean.
+    execute = body.get("execute", False)
+    if not isinstance(execute, bool):
+        return jsonify({"error": "execute must be a boolean"}), 400
 
     if (
         rule.device_id is not None
@@ -269,7 +278,10 @@ def dry_run_rule(rule_id):
         suppress_door=False,
         dry_run=True,
     )
-    current_app.logger.info("Dry-run fired rule %s (%s)", rule.id, rule.name)
+    queued = enqueue_rule_effects(device_id, result, now) if execute else []
+    current_app.logger.info(
+        "Dry-run fired rule %s (%s) execute=%s", rule.id, rule.name, execute
+    )
     return (
         jsonify(
             {
@@ -278,6 +290,8 @@ def dry_run_rule(rule_id):
                 "dry_run": True,
                 "device_id": device_id,
                 "zone_id": zone_id,
+                "executed": execute,
+                "queued": queued,
             }
         ),
         200,
