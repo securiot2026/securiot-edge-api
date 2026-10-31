@@ -62,7 +62,10 @@ def enroll_face():
         try:
             result = enroll_identity(name, quality_valid_paths, settings)
         except VisionError as exc:
-            return jsonify({"error": str(exc)}), 400
+            return (
+                jsonify({"error": str(exc), "skipped_images": list(quality_skipped)}),
+                400,
+            )
 
         return (
             jsonify(

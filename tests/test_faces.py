@@ -156,6 +156,61 @@ def test_vision_error_returns_400_and_cleans_up(app, client, monkeypatch):
     assert not os.path.exists(recorded_path["path"])
 
 
+def test_vision_error_400_includes_quality_gate_reasons_and_cleans_up(app, client, monkeypatch):
+    recorded_path = {}
+    original_mkdtemp = __import__("tempfile").mkdtemp
+
+    def recording_mkdtemp(*a, **k):
+        path = original_mkdtemp(*a, **k)
+        recorded_path["path"] = path
+        return path
+
+    monkeypatch.setattr("app.faces.tempfile.mkdtemp", recording_mkdtemp)
+
+    reasons = [
+        "face-1.jpg: Image is too blurry; hold still",
+        "face-2.jpg: No face detected",
+    ]
+    monkeypatch.setattr(
+        faces_module,
+        "validate_capture_quality",
+        lambda paths, settings: (paths[:1], list(reasons)),
+    )
+
+    def raise_vision_error(name, paths, settings):
+        raise VisionError("Only 1 valid enrollment images were found; at least 3 are required.")
+
+    monkeypatch.setattr(faces_module, "enroll_identity", raise_vision_error)
+
+    with app.app_context():
+        response = _post_faces(client)
+
+    assert response.status_code == 400
+    body = response.get_json()
+    assert body["error"].startswith("Only 1 valid")
+    assert body["skipped_images"] == reasons
+    assert not os.path.exists(recorded_path["path"])
+
+
+def test_vision_error_400_without_quality_skips_has_empty_skipped_images(app, client, monkeypatch):
+    monkeypatch.setattr(
+        faces_module, "validate_capture_quality", lambda paths, settings: (paths, [])
+    )
+
+    def raise_vision_error(name, paths, settings):
+        raise VisionError("Display name is invalid")
+
+    monkeypatch.setattr(faces_module, "enroll_identity", raise_vision_error)
+
+    with app.app_context():
+        response = _post_faces(client, name="!!!")
+
+    assert response.status_code == 400
+    body = response.get_json()
+    assert "error" in body
+    assert body["skipped_images"] == []
+
+
 def test_quality_gate_skips_are_excluded_from_enrollment_and_reported(app, client, monkeypatch):
     captured_args = {}
 
