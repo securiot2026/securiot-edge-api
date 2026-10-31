@@ -407,7 +407,7 @@ def test_dry_run_execute_buzzer_queues_buzzer_command(app, client):
         }
 
 
-def test_dry_run_execute_door_lock_queues_door_lock_command(app, client):
+def test_dry_run_execute_door_lock_queues_door_close_command(app, client):
     with app.app_context():
         rule_id = _create_rule(
             client,
@@ -421,8 +421,9 @@ def test_dry_run_execute_door_lock_queues_door_lock_command(app, client):
 
         response = _dry_run(client, rule_id, {**IDENT, "execute": True})
         assert response.status_code == 200
-        assert response.get_json()["queued"] == ["door_lock"]
-        assert _pending_commands["dev-1"]["door_lock"]["action"] == {}
+        assert response.get_json()["queued"] == ["door"]
+        assert _pending_commands["dev-1"]["door"]["action"] == {"state": "close"}
+        assert "door_lock" not in _pending_commands["dev-1"]
 
 
 def test_dry_run_queued_command_is_deliverable_like_manual_command(app, client):
@@ -468,6 +469,26 @@ def test_public_commands_endpoint_still_rejects_door_lock(client):
     response = client.post(
         "/commands",
         json={"device_id": "dev-1", "actuator": "door_lock", "action": {}},
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 400
+    assert _pending_commands.get("dev-1", {}) == {}
+
+
+def test_public_commands_endpoint_accepts_door_with_valid_state(client):
+    response = client.post(
+        "/commands",
+        json={"device_id": "dev-1", "actuator": "door", "action": {"state": "open"}},
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 201
+    assert _pending_commands["dev-1"]["door"]["action"] == {"state": "open"}
+
+
+def test_public_commands_endpoint_rejects_door_with_invalid_state(client):
+    response = client.post(
+        "/commands",
+        json={"device_id": "dev-1", "actuator": "door", "action": {"state": "ajar"}},
         headers=ADMIN_HEADERS,
     )
     assert response.status_code == 400

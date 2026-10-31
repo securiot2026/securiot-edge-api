@@ -401,9 +401,9 @@ def test_manual_command_suppresses_automatic_door_action_during_cooldown(
 
         # Directly stamp the internal suppression-state dict, per
         # 07-CONTEXT.md's D-R2: CTRL-06 is verified at the unit level
-        # against app/commands.py's suppression check, not via a literal
-        # end-to-end POST through /commands with a "door" actuator value
-        # (the public actuator enum never accepts "door").
+        # against app/commands.py's suppression check by stamping the state
+        # directly. The real POST /commands -> /frames delivery path is
+        # covered by test_door_command_delivery_arms_suppression_end_to_end.
         _manual_command_delivered["dev-manual-door"] = {
             "door": datetime.datetime.utcnow()
         }
@@ -421,3 +421,31 @@ def test_manual_command_suppresses_automatic_door_action_during_cooldown(
         )
         door_readings = [r for r in readings if r.sensor_type == "door_contact"]
         assert door_readings == []
+
+
+def test_door_command_delivery_arms_suppression_end_to_end(app, client):
+    with app.app_context():
+        device_id = "dev-door-e2e"
+        queued = client.post(
+            "/commands",
+            json={
+                "device_id": device_id,
+                "actuator": "door",
+                "action": {"state": "open"},
+            },
+            headers={"X-Admin-Key": "adminsecret"},
+        )
+        assert queued.status_code == 201
+
+        delivery = _post_frame(client, "person_left.jpg", device_id=device_id)
+        assert delivery.status_code == 200
+        manual = delivery.get_json()["manual_command"]
+        assert manual["actuator"] == "door"
+        assert manual["action"] == {"state": "open"}
+
+        triggering = _post_frame(client, "person_left.jpg", device_id=device_id)
+        assert triggering.status_code == 200
+        assert triggering.get_json()["door_action"] is None
+
+        readings = list(Reading.select().where(Reading.device_id == device_id))
+        assert [r for r in readings if r.sensor_type == "door_contact"] == []

@@ -164,3 +164,107 @@ def test_status_rejects_unknown_actuator(app, client):
 def test_status_requires_admin_key(app, client):
     response = client.get("/commands/dev-1/status?actuator=light")
     assert response.status_code == 401
+
+
+ADMIN = {"X-Admin-Key": "adminsecret"}
+
+
+def _post_door(client, action, device_id="dev-1", headers=ADMIN):
+    return client.post(
+        "/commands",
+        json={"device_id": device_id, "actuator": "door", "action": action},
+        headers=headers,
+    )
+
+
+@pytest.mark.parametrize("state", ["open", "close"])
+def test_create_command_accepts_valid_door_command(app, client, state):
+    response = _post_door(client, {"state": state})
+    assert response.status_code == 201
+    body = response.get_json()
+    assert body["actuator"] == "door"
+    assert body["action"] == {"state": state}
+    assert _pending_commands["dev-1"]["door"]["action"] == {"state": state}
+
+
+def test_door_command_without_admin_key_returns_401(app, client):
+    response = _post_door(client, {"state": "open"}, headers={})
+    assert response.status_code == 401
+    assert _pending_commands == {}
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        None,
+        [],
+        ["open"],
+        "open",
+        {},
+        {"state": "ajar"},
+        {"state": "OPEN"},
+        {"state": 1},
+        {"state": None},
+    ],
+)
+def test_door_command_rejects_invalid_action(app, client, action):
+    payload = {"device_id": "dev-1", "actuator": "door"}
+    if action is not None:
+        payload["action"] = action
+    response = client.post("/commands", json=payload, headers=ADMIN)
+    assert response.status_code == 400
+    assert _pending_commands == {}
+
+
+def test_door_command_drops_extra_keys(app, client):
+    response = _post_door(client, {"state": "open", "force": True, "x": 1})
+    assert response.status_code == 201
+    assert response.get_json()["action"] == {"state": "open"}
+    assert _pending_commands["dev-1"]["door"]["action"] == {"state": "open"}
+
+
+def test_door_command_delivery_returns_it_and_arms_suppression(app, client):
+    from app.commands import manual_suppression_active, pop_deliverable_command
+    import datetime
+
+    _post_door(client, {"state": "open"})
+    with app.app_context():
+        now = datetime.datetime.utcnow()
+        delivered = pop_deliverable_command("dev-1", now)
+        assert delivered["actuator"] == "door"
+        assert delivered["action"] == {"state": "open"}
+        assert manual_suppression_active("dev-1", "door", now, 30) is True
+
+
+def test_door_status_pending_then_delivered(app, client):
+    from app.commands import pop_deliverable_command
+    import datetime
+
+    _post_door(client, {"state": "close"})
+    pending = client.get("/commands/dev-1/status?actuator=door", headers=ADMIN)
+    assert pending.status_code == 200
+    assert pending.get_json()["status"] == "pending"
+
+    with app.app_context():
+        pop_deliverable_command("dev-1", datetime.datetime.utcnow())
+    delivered = client.get("/commands/dev-1/status?actuator=door", headers=ADMIN)
+    assert delivered.get_json()["status"] == "delivered"
+
+
+def test_status_unknown_actuator_error_lists_door(app, client):
+    response = client.get("/commands/dev-1/status?actuator=siren", headers=ADMIN)
+    assert response.status_code == 400
+    assert "door" in response.get_json()["error"]
+
+
+def test_second_door_command_replaces_first(app, client):
+    from app.commands import pop_deliverable_command
+    import datetime
+
+    _post_door(client, {"state": "open"})
+    _post_door(client, {"state": "close"})
+    with app.app_context():
+        now = datetime.datetime.utcnow()
+        delivered = pop_deliverable_command("dev-1", now)
+        assert delivered["action"] == {"state": "close"}
+        assert pop_deliverable_command("dev-1", now) is None

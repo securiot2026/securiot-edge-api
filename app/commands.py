@@ -6,7 +6,7 @@ from app.auth import require_admin_key
 
 commands_bp = Blueprint("commands", __name__)
 
-ACTUATORS = ("pan_tilt", "light", "buzzer")
+ACTUATORS = ("pan_tilt", "light", "buzzer", "door")
 
 # device_id -> {actuator: {"action": dict, "issued_at": datetime}}. Module-level
 # and in-memory, matching app/frames.py's _last_door_action accepted MVP
@@ -16,11 +16,12 @@ ACTUATORS = ("pan_tilt", "light", "buzzer")
 _pending_commands = {}
 
 # device_id -> {actuator: datetime of last manual delivery to /frames}. Drives
-# CTRL-06 cooldown suppression of the automatic door-lock action. Only ever
-# populated for "pan_tilt"/"light"/"buzzer" by real command delivery; the
-# "door" key is written only by tests, directly, to exercise the suppression
-# check in isolation (see app/frames.py's cooldown block and Open Question 1
-# in 07-RESEARCH.md — "door" is not a value accepted by create_command()).
+# CTRL-06 cooldown suppression of the automatic door-lock action. "door" is a
+# public actuator (manual open/close): delivering a door command opens the
+# manual suppression window that mutes the automatic door lock for
+# DOOR_ACTION_COOLDOWN_SECONDS (see app/frames.py's cooldown block). The
+# internal "door_lock" actuator no longer exists as a queue key: rule effects
+# queue a "door" close command instead.
 _manual_command_delivered = {}
 
 # How long a rule effect queued by an explicit dry-run (execute true) keeps the
@@ -39,6 +40,13 @@ def _validate_action(actuator, action):
     elif actuator in ("light", "buzzer"):
         if not isinstance(action, dict) or not isinstance(action.get("on"), bool):
             return f"action must be {{'on': boolean}} for actuator '{actuator}'"
+    elif actuator == "door":
+        if (
+            not isinstance(action, dict)
+            or not isinstance(action.get("state"), str)
+            or action["state"] not in ("open", "close")
+        ):
+            return "action must be {'state': 'open' | 'close'} for actuator 'door'"
     return None
 
 
@@ -64,9 +72,20 @@ def create_command():
     if validation_error is not None:
         return jsonify({"error": validation_error}), 400
 
+    if actuator == "door":
+        # Store and echo only the validated state, dropping any extra keys.
+        action = {"state": action["state"]}
+
     issued_at = datetime.datetime.utcnow()
     device_commands = _pending_commands.setdefault(device_id, {})
     device_commands[actuator] = {"action": action, "issued_at": issued_at}
+
+    if actuator == "door":
+        # Audit trail for a physical access control action. Device id and
+        # state only: never the admin key or request headers.
+        current_app.logger.info(
+            "door command queued device_id=%s state=%s", device_id, action["state"]
+        )
 
     return (
         jsonify(
@@ -86,9 +105,11 @@ def enqueue_rule_effects(device_id, result, now):
     into pending manual-queue entries and return the queued actuator names.
 
     Entries are stored exactly like create_command does, so expiry, delivery
-    and status keep working. "door_lock" is deliberately NOT in the public
-    ACTUATORS tuple: this helper is its only producer and is reachable only
-    from the admin-gated dry-run route.
+    and status keep working. A door lock effect is queued as a "door" close
+    command ({"state": "close"}) in the same per-actuator slot as a manual
+    door command. The legacy "door_lock" name remains accepted only by the
+    firmware as an alias and is not accepted by the public POST /commands
+    route.
     """
     queued = []
     device_commands = _pending_commands.setdefault(device_id, {})
@@ -102,8 +123,8 @@ def enqueue_rule_effects(device_id, result, now):
         queued.append(actuator)
 
     if result.get("door_action") == "lock":
-        device_commands["door_lock"] = {"action": {}, "issued_at": now}
-        queued.append("door_lock")
+        device_commands["door"] = {"action": {"state": "close"}, "issued_at": now}
+        queued.append("door")
 
     return queued
 

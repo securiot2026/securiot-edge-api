@@ -195,11 +195,13 @@ def frames():
         # weapon-fire dispatch (there is none here, matched_rules is empty).
         return _empty_response(face_recognitions, manual_command), 200
 
-    # CTRL-06: a manual command delivered for the "door" actuator (test-only
-    # public-API-inaccessible value, see app/commands.py) suppresses the
-    # rules engine's automatic door_lock action for the manual cooldown
-    # window — checked before dispatch so a suppressed rule never buffers a
-    # door_contact Reading or consumes its own per-rule cooldown.
+    # CTRL-06: "door" is a public actuator (manual open/close, see
+    # app/commands.py). Delivering a door command opens the manual
+    # suppression window that mutes the rules engine's automatic door lock
+    # for DOOR_ACTION_COOLDOWN_SECONDS. The internal door_lock actuator no
+    # longer exists as a queue key. Checked before dispatch so a suppressed
+    # rule never buffers a door_contact Reading or consumes its own per-rule
+    # cooldown.
     suppress_door = manual_suppression_active(
         device_id,
         "door",
