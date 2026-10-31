@@ -10,7 +10,7 @@ import json
 from flask import Blueprint, current_app, jsonify, request
 
 from app.auth import require_admin_key
-from app.models import Rule
+from app.models import Reading, Rule
 from app.rules_engine import dispatch
 
 rules_bp = Blueprint("rules", __name__)
@@ -169,6 +169,17 @@ def delete_rule(rule_id):
     return "", 204
 
 
+def _identity_field(body, field):
+    """Return (value, error). A missing/None field is (None, None); a present
+    field must be a non-blank string."""
+    value = body.get(field)
+    if value is None:
+        return None, None
+    if not isinstance(value, str) or not value.strip():
+        return None, f"{field} must be a non-blank string"
+    return value.strip(), None
+
+
 @rules_bp.route("/rules/<int:rule_id>/dry-run", methods=["POST"])
 def dry_run_rule(rule_id):
     """RULE-11: let the operator test a rule's configured action without
@@ -176,8 +187,15 @@ def dry_run_rule(rule_id):
     the same single action-dispatch path /frames and /ingest already go
     through — so a dry-run genuinely exercises the configured action
     (door_lock / light / buzzer / alert), not a simulated summary of it.
-    Cooldown is intentionally bypassed (an explicit manual test), but the
-    rule's last_triggered_at IS updated, same as a real trigger."""
+
+    Identity (D-04): device_id comes from the body, else the rule's own
+    device_id; zone_id from the body, else the newest Reading of that device.
+    A dry-run never dispatches with a null zone (buffer_reading would silently
+    drop the row: Reading.zone_id is NOT NULL).
+
+    Cooldown is intentionally bypassed (an explicit manual test) and the
+    rule's last_triggered_at is left untouched: RULE-10 reflects only real
+    triggers. The alert Reading carries a dry-run marker."""
     unauthorized = require_admin_key()
     if unauthorized is not None:
         return unauthorized
@@ -188,14 +206,79 @@ def dry_run_rule(rule_id):
     if not rule.enabled:
         return jsonify({"error": "cannot dry-run a disabled rule"}), 400
 
+    body = request.get_json(silent=True)
+    if body is None:
+        body = {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "request body must be a JSON object"}), 400
+
+    body_device_id, error = _identity_field(body, "device_id")
+    if error:
+        return jsonify({"error": error}), 400
+    body_zone_id, error = _identity_field(body, "zone_id")
+    if error:
+        return jsonify({"error": error}), 400
+
+    if (
+        rule.device_id is not None
+        and body_device_id is not None
+        and body_device_id != rule.device_id
+    ):
+        return (
+            jsonify(
+                {"error": "device_id does not match the device this rule is scoped to"}
+            ),
+            400,
+        )
+    device_id = body_device_id or rule.device_id
+    if device_id is None:
+        return (
+            jsonify(
+                {"error": "device_id is required: this rule applies to every device"}
+            ),
+            400,
+        )
+
+    zone_id = body_zone_id
+    if zone_id is None:
+        latest = (
+            Reading.select()
+            .where(Reading.device_id == device_id)
+            .order_by(Reading.id.desc())
+            .first()
+        )
+        if latest is None:
+            return (
+                jsonify(
+                    {
+                        "error": "zone_id is required: no readings exist for this "
+                        "device yet, send zone_id in the request body"
+                    }
+                ),
+                400,
+            )
+        zone_id = latest.zone_id
+
     now = datetime.datetime.utcnow()
     result = dispatch(
-        rule.device_id,
-        None,
+        device_id,
+        zone_id,
         [rule],
         now,
         manual_command=None,
         suppress_door=False,
+        dry_run=True,
     )
     current_app.logger.info("Dry-run fired rule %s (%s)", rule.id, rule.name)
-    return jsonify({"rule": _rule_to_dict(rule), "result": result}), 200
+    return (
+        jsonify(
+            {
+                "rule": _rule_to_dict(rule),
+                "result": result,
+                "dry_run": True,
+                "device_id": device_id,
+                "zone_id": zone_id,
+            }
+        ),
+        200,
+    )

@@ -24,6 +24,10 @@ from app.reading_buffer import buffer_reading
 
 WEAPON_CLASS_NAME = "knife"
 
+# Prefix on the alert message of a dry-run so operators and audits can tell a
+# manual test from a real trigger (RULE-10 / RULE-11).
+DRY_RUN_MARKER = "[Dry-run] "
+
 
 def _condition_matches(rule, *, detections, image_path, occupancy_count):
     condition_type = rule.condition_type
@@ -149,7 +153,14 @@ def resolve_actuator_actions(matched_rules):
 
 
 def dispatch(
-    device_id, zone_id, matched_rules, now, *, manual_command=None, suppress_door=False
+    device_id,
+    zone_id,
+    matched_rules,
+    now,
+    *,
+    manual_command=None,
+    suppress_door=False,
+    dry_run=False,
 ):
     """Single, shared action-dispatch path (RULE-12: exactly one place that
     turns a matched rule into an effect — frames.py and ingest.py both call
@@ -161,6 +172,10 @@ def dispatch(
     synchronously in this same response rather than queued — a manual
     operator command for the same actuator this cycle always wins (CTRL-06
     precedent: manual suppresses automatic).
+
+    `dry_run=True` (RULE-11): same effects, but the rule's last_triggered_at is
+    never touched (RULE-10 reflects only real triggers) and the alert Reading
+    is marked so it is distinguishable from a real one.
     """
     resolved = resolve_actuator_actions(matched_rules)
     result = {"door_action": None, "rule_command": None}
@@ -208,15 +223,16 @@ def dispatch(
                     {
                         "rule_name": rule.name,
                         "severity": action.get("severity", "medium"),
-                        "message": action.get(
-                            "message", f"Rule '{rule.name}' triggered"
-                        ),
+                        "message": (DRY_RUN_MARKER if dry_run else "")
+                        + action.get("message", f"Rule '{rule.name}' triggered"),
+                        **({"dry_run": True} if dry_run else {}),
                     }
                 ),
                 recorded_at=now,
             )
 
-    mark_triggered(fired_rules, now)
+    if not dry_run:
+        mark_triggered(fired_rules, now)
     return result
 
 

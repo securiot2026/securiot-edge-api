@@ -1,9 +1,11 @@
+import datetime
 import json
+import uuid
 
 import pytest
 
 from app import create_app
-from app.models import Rule
+from app.models import Reading, Rule
 
 
 class FakeConfig:
@@ -120,28 +122,207 @@ def test_dry_run_missing_rule_returns_404(client):
     assert response.status_code == 404
 
 
-def test_dry_run_fires_alert_action_and_updates_last_triggered(app, client):
-    with app.app_context():
-        created = client.post(
-            "/rules",
-            json={
-                "name": "Manual test alert",
-                "condition_type": "sensor_threshold",
-                "operator": ">",
-                "sensor_type": "temperature",
-                "match_value": "40",
-                "actions": [{"type": "alert", "severity": "high"}],
-            },
-            headers=ADMIN_HEADERS,
-        )
-        rule_id = created.get_json()["id"]
-        assert created.get_json()["last_triggered_at"] is None
+def _create_rule(client, **overrides):
+    payload = {
+        "name": "Manual test alert",
+        "condition_type": "sensor_threshold",
+        "operator": ">",
+        "sensor_type": "temperature",
+        "match_value": "40",
+        "actions": [{"type": "alert", "severity": "high"}],
+    }
+    payload.update(overrides)
+    created = client.post("/rules", json=payload, headers=ADMIN_HEADERS)
+    assert created.status_code == 201
+    return created.get_json()["id"]
 
-        response = client.post(f"/rules/{rule_id}/dry-run", headers=ADMIN_HEADERS)
+
+def _dry_run(client, rule_id, body=None):
+    return client.post(
+        f"/rules/{rule_id}/dry-run",
+        json=body if body is not None else {},
+        headers=ADMIN_HEADERS,
+    )
+
+
+def _seed_reading(device_id, zone_id):
+    Reading.create(
+        reading_id=f"seed-{device_id}-{zone_id}-{uuid.uuid4()}",
+        device_id=device_id,
+        zone_id=zone_id,
+        sensor_type="occupancy",
+        value="1",
+        recorded_at=datetime.datetime.utcnow(),
+    )
+
+
+def test_dry_run_alert_buffers_marked_reading_with_real_zone(app, client):
+    with app.app_context():
+        rule_id = _create_rule(client)
+
+        response = _dry_run(client, rule_id, {"device_id": "dev-1", "zone_id": "zone-9"})
         assert response.status_code == 200
         body = response.get_json()
-        assert body["rule"]["last_triggered_at"] is not None
-        assert Rule.get_by_id(rule_id).last_triggered_at is not None
+        assert body["dry_run"] is True
+        assert body["device_id"] == "dev-1"
+        assert body["zone_id"] == "zone-9"
+        assert "rule" in body and "result" in body
+
+        reading = Reading.get(
+            (Reading.device_id == "dev-1") & (Reading.sensor_type == "rule_alert")
+        )
+        assert reading.zone_id == "zone-9"
+        assert reading.synced is False
+        value = json.loads(reading.value)
+        assert value["severity"] == "high"
+        assert value["message"].startswith("[Dry-run] ")
+        assert value["dry_run"] is True
+
+
+def test_dry_run_door_lock_buffers_door_contact_reading(app, client):
+    with app.app_context():
+        rule_id = _create_rule(
+            client,
+            name="Door test",
+            condition_type="object_class",
+            operator=None,
+            sensor_type=None,
+            match_value="person",
+            actions=[{"type": "door_lock"}],
+        )
+
+        response = _dry_run(client, rule_id, {"device_id": "dev-1", "zone_id": "zone-9"})
+        assert response.status_code == 200
+        assert response.get_json()["result"]["door_action"] == "lock"
+
+        reading = Reading.get(
+            (Reading.device_id == "dev-1") & (Reading.sensor_type == "door_contact")
+        )
+        assert reading.zone_id == "zone-9"
+        assert reading.value == "open"
+
+
+def test_dry_run_leaves_last_triggered_at_none_for_never_fired_rule(app, client):
+    with app.app_context():
+        rule_id = _create_rule(client)
+
+        response = _dry_run(client, rule_id, {"device_id": "dev-1", "zone_id": "zone-9"})
+        assert response.status_code == 200
+        assert response.get_json()["rule"]["last_triggered_at"] is None
+        assert Rule.get_by_id(rule_id).last_triggered_at is None
+
+
+def test_dry_run_keeps_previous_last_triggered_at_for_fired_rule(app, client):
+    with app.app_context():
+        rule_id = _create_rule(client)
+        previous = datetime.datetime(2026, 1, 2, 3, 4, 5)
+        rule = Rule.get_by_id(rule_id)
+        rule.last_triggered_at = previous
+        rule.save()
+
+        response = _dry_run(client, rule_id, {"device_id": "dev-1", "zone_id": "zone-9"})
+        assert response.status_code == 200
+        assert response.get_json()["rule"]["last_triggered_at"] == previous.isoformat() + "Z"
+        assert Rule.get_by_id(rule_id).last_triggered_at == previous
+
+
+def test_dry_run_bypasses_cooldown(app, client):
+    with app.app_context():
+        rule_id = _create_rule(client, cooldown_seconds=3600)
+        rule = Rule.get_by_id(rule_id)
+        rule.last_triggered_at = datetime.datetime.utcnow()
+        rule.save()
+
+        response = _dry_run(client, rule_id, {"device_id": "dev-1", "zone_id": "zone-9"})
+        assert response.status_code == 200
+        assert (
+            Reading.select()
+            .where(
+                (Reading.device_id == "dev-1") & (Reading.sensor_type == "rule_alert")
+            )
+            .count()
+            == 1
+        )
+
+
+def test_dry_run_takes_zone_from_latest_reading_when_body_has_none(app, client):
+    with app.app_context():
+        rule_id = _create_rule(client)
+        _seed_reading("dev-1", "zone-old")
+        _seed_reading("dev-1", "zone-new")
+
+        response = _dry_run(client, rule_id, {"device_id": "dev-1"})
+        assert response.status_code == 200
+        assert response.get_json()["zone_id"] == "zone-new"
+        reading = Reading.get(
+            (Reading.device_id == "dev-1") & (Reading.sensor_type == "rule_alert")
+        )
+        assert reading.zone_id == "zone-new"
+
+
+def test_dry_run_400_when_zone_unresolvable(app, client):
+    with app.app_context():
+        rule_id = _create_rule(client)
+
+        response = _dry_run(client, rule_id, {"device_id": "dev-1"})
+        assert response.status_code == 400
+        assert "zone_id" in response.get_json()["error"]
+        assert Reading.select().count() == 0
+
+
+def test_dry_run_uses_rule_device_id_when_body_omits_it(app, client):
+    with app.app_context():
+        rule_id = _create_rule(client, device_id="dev-7")
+
+        response = _dry_run(client, rule_id, {"zone_id": "zone-3"})
+        assert response.status_code == 200
+        assert response.get_json()["device_id"] == "dev-7"
+
+
+def test_dry_run_400_when_device_unresolvable(app, client):
+    with app.app_context():
+        rule_id = _create_rule(client)  # device_id null: applies to every device
+
+        response = _dry_run(client, rule_id, {"zone_id": "zone-3"})
+        assert response.status_code == 400
+        assert "device_id" in response.get_json()["error"]
+
+
+def test_dry_run_400_when_body_device_differs_from_rule_device(app, client):
+    with app.app_context():
+        rule_id = _create_rule(client, device_id="dev-7")
+
+        response = _dry_run(client, rule_id, {"device_id": "dev-8", "zone_id": "zone-3"})
+        assert response.status_code == 400
+        assert Reading.select().count() == 0
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"device_id": "", "zone_id": "zone-1"},
+        {"device_id": "   ", "zone_id": "zone-1"},
+        {"device_id": 5, "zone_id": "zone-1"},
+        {"device_id": "dev-1", "zone_id": ""},
+        {"device_id": "dev-1", "zone_id": "  "},
+        {"device_id": "dev-1", "zone_id": 7},
+    ],
+)
+def test_dry_run_rejects_blank_or_non_string_identity(app, client, body):
+    with app.app_context():
+        rule_id = _create_rule(client)
+
+        response = _dry_run(client, rule_id, body)
+        assert response.status_code == 400
+        assert Reading.select().count() == 0
+
+
+def test_dry_run_without_body_is_400_not_a_crash(app, client):
+    with app.app_context():
+        rule_id = _create_rule(client)
+
+        response = client.post(f"/rules/{rule_id}/dry-run", headers=ADMIN_HEADERS)
+        assert response.status_code == 400
 
 
 def test_dry_run_rejects_disabled_rule(app, client):
