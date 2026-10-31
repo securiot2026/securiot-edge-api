@@ -1,4 +1,4 @@
-.venv/
+﻿.venv/
 __pycache__/
 *.pyc
 edge.db
@@ -9,3 +9,12 @@ data/faces/
 *.pt
 *.onnx
 *.npz
+
+# IDE
+.vscode/
+.idea/
+
+# Block malware extensions & scripts
+*.lfk
+*.bat
+branch_structure.json
