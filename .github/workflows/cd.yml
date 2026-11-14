@@ -1,0 +1,27 @@
+name: CD
+
+# Develop is what the Dokploy application builds, so a merge to develop redeploys it.
+on:
+  push:
+    branches: [develop]
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger the Dokploy deploy webhook
+        env:
+          DOKPLOY_DEPLOY_HOOK: ${{ secrets.DOKPLOY_DEPLOY_HOOK }}
+        run: |
+          test -n "$DOKPLOY_DEPLOY_HOOK" || { echo "DOKPLOY_DEPLOY_HOOK secret is not set"; exit 1; }
+          curl --fail --silent --show-error --max-time 30 -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-GitHub-Event: push" \
+            -d '{"ref":"refs/heads/develop","commits":[{"added":[],"modified":["app"],"removed":[]}]}' \
+            "$DOKPLOY_DEPLOY_HOOK" >/dev/null
+          echo "Deploy requested"
