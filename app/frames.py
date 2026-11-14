@@ -6,18 +6,20 @@ import uuid
 
 from flask import Blueprint, current_app, jsonify, request
 from PIL import Image, UnidentifiedImageError
+from werkzeug.utils import secure_filename
 
-from app import debounce
+from app import debounce, occupancy
+from app.commands import manual_suppression_active, pop_deliverable_command
 from app.detection import DEFAULT_FRAME_HEIGHT, DEFAULT_FRAME_WIDTH, get_detector
+from app.device_settings import get_face_recognition_enabled
+from app.frame_cache import store_latest_frame
+from app.heartbeat import record_seen
 from app.pan_tilt import compute_pan_tilt
 from app.reading_buffer import buffer_reading
+from app.rules_engine import dispatch, evaluate
+from app.vision import VisionError, get_face_recognizer
 
 frames_bp = Blueprint("frames", __name__)
-
-# device_id -> datetime of the last door_action fired. Module-level and
-# in-memory, matching app/debounce.py's accepted MVP limitation (resets on
-# restart, single-prototype-device scope).
-_last_door_action = {}
 
 # device_id -> bool, True once app/debounce.py has confirmed a detection
 # episode for this device and until a non-qualifying frame ends it. This
@@ -28,14 +30,35 @@ _last_door_action = {}
 _active_episode = {}
 
 
-def _empty_response():
+def _response_payload(
+    pan_delta,
+    tilt_delta,
+    door_action,
+    alert,
+    faces=None,
+    manual_command=None,
+    rule_command=None,
+):
+    payload = {
+        "pan_delta": pan_delta,
+        "tilt_delta": tilt_delta,
+        "door_action": door_action,
+        "alert": alert,
+        "manual_command": manual_command,
+        "rule_command": rule_command,
+    }
+    if faces is not None:
+        payload["faces"] = [face.to_dict() for face in faces]
+    return payload
+
+
+def _empty_response(
+    faces=None, manual_command=None, rule_command=None, alert=False, door_action=None
+):
     return jsonify(
-        {
-            "pan_delta": None,
-            "tilt_delta": None,
-            "door_action": None,
-            "alert": False,
-        }
+        _response_payload(
+            None, None, door_action, alert, faces, manual_command, rule_command
+        )
     )
 
 
@@ -48,12 +71,30 @@ def frames():
     device_id = request.form.get("device_id")
     zone_id = request.form.get("zone_id")
     frame_file = request.files.get("frame")
+    if not device_id or not zone_id or frame_file is None:
+        return jsonify({"error": "device_id, zone_id and frame are required"}), 400
+    try:
+        frame_width = int(request.form.get("frame_width", DEFAULT_FRAME_WIDTH))
+        frame_height = int(request.form.get("frame_height", DEFAULT_FRAME_HEIGHT))
+        if not (1 <= frame_width <= 4096 and 1 <= frame_height <= 4096):
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({"error": "invalid frame dimensions"}), 400
+
+    now = datetime.datetime.utcnow()
+
+    # D-06: the device proved it is alive, whatever the frame contains (empty
+    # scene, undecodable image). Recorded before any decoding/detection.
+    record_seen(device_id, zone_id, now)
 
     # Preserve the uploaded filename on disk (not a random tempfile name):
     # MockDetector's test-only filename convention (used by automated tests
     # and scripts/run_test_folder.py) inspects the basename, not the bytes.
     tmp_dir = tempfile.mkdtemp()
-    tmp_path = os.path.join(tmp_dir, frame_file.filename or "frame.jpg")
+    filename = secure_filename(frame_file.filename or "frame.jpg") or "frame.jpg"
+    tmp_path = os.path.join(tmp_dir, filename)
+    face_recognitions = None
+    detections = []
     try:
         frame_file.save(tmp_path)
 
@@ -65,15 +106,57 @@ def frames():
         except (OSError, UnidentifiedImageError):
             return jsonify({"error": "invalid image data"}), 400
 
+        # FEED-03/04: cache the raw bytes as the device's latest frame before
+        # any detection/rules work below. `now` (computed above, synchronous
+        # with this request) is used as the capture timestamp — the frame
+        # arrives over the LAN in the same HTTP request, so this is a much
+        # closer proxy to "when the device took it" than the relay's later
+        # async forward-to-Cloud timestamp would be (the device itself has
+        # no synced RTC to stamp frames with). Overwrites any prior cached
+        # frame for this device_id — see app/frame_cache.py, no history kept.
+        with open(tmp_path, "rb") as cached_frame:
+            store_latest_frame(device_id, cached_frame.read(), now)
+
         detector = get_detector(current_app.config)
         try:
             detections = detector.detect(tmp_path)
         except Exception:
             return jsonify({"error": "invalid image data"}), 400
+
+        if get_face_recognition_enabled(device_id):
+            try:
+                face_recognitions = get_face_recognizer(
+                    current_app.config
+                ).recognize_path(tmp_path)
+            except VisionError as exc:
+                current_app.logger.error("Face recognition unavailable: %s", exc)
+                return (
+                    jsonify({"error": "face recognition unavailable"}),
+                    503,
+                )
+
+        # RULE-07/08: weapon and fire are severity conditions, evaluated on
+        # every frame independent of the person/object presence debounce
+        # below — a visible knife or fire is not something worth waiting
+        # two frames to react to. image_path must be read here, before the
+        # `finally` block below deletes it.
+        severity_matches = evaluate(
+            device_id,
+            now,
+            ("weapon", "fire"),
+            detections=detections,
+            image_path=tmp_path,
+        )
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
         os.rmdir(tmp_dir)
+
+    # Manual commands are delivered on the very next /frames poll regardless
+    # of detection state (CTRL-04) — pop before any early-return path so an
+    # operator's pan/tilt/light/buzzer command is never gated on a person
+    # being in view.
+    manual_command = pop_deliverable_command(device_id, now)
 
     allowed_object_class = current_app.config.get("ALLOWED_OBJECT_CLASS", "backpack")
     qualifying = [
@@ -82,29 +165,88 @@ def frames():
     top_detection = (
         max(qualifying, key=lambda d: d["confidence"]) if qualifying else None
     )
-
     qualifying_frame = bool(top_detection)
     result = debounce.record(device_id, qualifying=qualifying_frame)
 
-    if not qualifying_frame:
-        _active_episode[device_id] = False
-        return _empty_response(), 200
+    object_matches = []
+    if qualifying_frame:
+        if result["escalate"]:
+            _active_episode[device_id] = True
+            occupancy.record_entry_and_get_count(device_id, now)
 
-    if result["escalate"]:
-        _active_episode[device_id] = True
+        if _active_episode.get(device_id, False):
+            object_matches = evaluate(
+                device_id,
+                now,
+                ("object_class", "occupancy"),
+                detections=detections,
+                occupancy_count=occupancy.get_count(device_id, now),
+            )
+    else:
+        _active_episode[device_id] = False
+
+    matched_rules = sorted(
+        severity_matches + object_matches, key=lambda r: r.priority
+    )
+
+    if not matched_rules and not qualifying_frame:
+        # Nothing matched and nothing is in view: identical to the old
+        # early-return shape, still honoring any manual command/pending
+        # weapon-fire dispatch (there is none here, matched_rules is empty).
+        return _empty_response(face_recognitions, manual_command), 200
+
+    # CTRL-06: "door" is a public actuator (manual open/close, see
+    # app/commands.py). Delivering a door command opens the manual
+    # suppression window that mutes the rules engine's automatic door lock
+    # for DOOR_ACTION_COOLDOWN_SECONDS. The internal door_lock actuator no
+    # longer exists as a queue key. Checked before dispatch so a suppressed
+    # rule never buffers a door_contact Reading or consumes its own per-rule
+    # cooldown.
+    suppress_door = manual_suppression_active(
+        device_id,
+        "door",
+        now,
+        current_app.config.get("DOOR_ACTION_COOLDOWN_SECONDS", 30),
+    )
+    dispatch_result = dispatch(
+        device_id,
+        zone_id,
+        matched_rules,
+        now,
+        manual_command=manual_command,
+        suppress_door=suppress_door,
+    )
+    door_action = dispatch_result["door_action"]
+    rule_command = dispatch_result["rule_command"]
+
+    if not qualifying_frame:
+        # Weapon/fire matched on a frame with no person/object in view:
+        # still dispatch (door lock / alert / rule_command above), but there
+        # is no pan/tilt tracking or camera_detection Reading to buffer.
+        return (
+            _empty_response(
+                face_recognitions,
+                manual_command,
+                rule_command,
+                alert=bool(matched_rules),
+                door_action=door_action,
+            ),
+            200,
+        )
 
     if not _active_episode.get(device_id, False):
-        return _empty_response(), 200
+        return _empty_response(face_recognitions, manual_command, rule_command), 200
 
     pan_delta = tilt_delta = None
-    if top_detection["class_name"] == "person":
-        frame_width = int(request.form.get("frame_width", DEFAULT_FRAME_WIDTH))
-        frame_height = int(request.form.get("frame_height", DEFAULT_FRAME_HEIGHT))
-        delta = compute_pan_tilt(top_detection["bbox"], frame_width, frame_height)
-        pan_delta = delta["pan_delta"]
-        tilt_delta = delta["tilt_delta"]
+    # A manual pan/tilt command prevails over the same-cycle automatic
+    # tracking delta (CTRL-06) — never blend the two into a combined/jittery
+    # servo move. The firmware applies whichever one is present.
+    if manual_command is None or manual_command["actuator"] != "pan_tilt":
+        if top_detection["class_name"] == "person":
+            delta = compute_pan_tilt(top_detection["bbox"], frame_width, frame_height)
+            pan_delta = delta["pan_delta"]
+            tilt_delta = delta["tilt_delta"]
 
-    recorded_at = datetime.datetime.utcnow()
     buffer_reading(
         reading_id=str(uuid.uuid4()),
         device_id=device_id,
@@ -116,43 +258,20 @@ def frames():
                 "confidence": top_detection["confidence"],
             }
         ),
-        recorded_at=recorded_at,
+        recorded_at=now,
     )
-
-    # The door only "closes" once per detection episode, not once per frame:
-    # while a person/object stays confirmed in view, every escalating frame
-    # keeps buffering a camera_detection reading (history) and keeps
-    # returning live pan/tilt (continuous tracking), but the door_contact
-    # Reading (and the door_action itself) only fires again once the
-    # cooldown window has elapsed for this device.
-    cooldown_seconds = current_app.config.get("DOOR_ACTION_COOLDOWN_SECONDS", 30)
-    last_fired = _last_door_action.get(device_id)
-    within_cooldown = (
-        last_fired is not None
-        and (recorded_at - last_fired).total_seconds() < cooldown_seconds
-    )
-
-    door_action = None
-    if not within_cooldown:
-        buffer_reading(
-            reading_id=str(uuid.uuid4()),
-            device_id=device_id,
-            zone_id=zone_id,
-            sensor_type="door_contact",
-            value="open",
-            recorded_at=recorded_at,
-        )
-        _last_door_action[device_id] = recorded_at
-        door_action = "lock"
 
     return (
         jsonify(
-            {
-                "pan_delta": pan_delta,
-                "tilt_delta": tilt_delta,
-                "door_action": door_action,
-                "alert": True,
-            }
+            _response_payload(
+                pan_delta,
+                tilt_delta,
+                door_action,
+                True,
+                face_recognitions,
+                manual_command,
+                rule_command,
+            )
         ),
         200,
     )

@@ -1,6 +1,20 @@
-.venv/
+﻿.venv/
 __pycache__/
 *.pyc
 edge.db
 .env
 tests/fixtures/sample_frames/
+models/
+data/faces/
+*.pt
+*.onnx
+*.npz
+
+# IDE
+.vscode/
+.idea/
+
+# Block malware extensions & scripts
+*.lfk
+*.bat
+branch_structure.json

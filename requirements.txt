@@ -4,7 +4,10 @@ requests==2.34.2
 APScheduler==3.11.3
 python-dotenv==1.2.3
 pytest==9.1.1
-# Unpinned: PyTorch wheel selection is platform-specific (CPU/CUDA/arch),
-# pinning ultralytics here could pull an incompatible torch build on some machines.
-ultralytics
+# PyTorch remains an Ultralytics dependency because its CPU/CUDA wheel selection
+# is platform-specific. Install the desired PyTorch build before this file.
+ultralytics>=8.3,<9
 Pillow==12.3.0
+numpy>=1.26,<3
+opencv-python>=4.10,<5
+onnxruntime>=1.20,<2

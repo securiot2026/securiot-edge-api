@@ -3,6 +3,7 @@ import datetime
 from flask import Blueprint, current_app, jsonify, request
 
 from app.reading_buffer import buffer_reading
+from app.rules_engine import dispatch, evaluate_sensor_threshold
 
 ingest_bp = Blueprint("ingest", __name__)
 
@@ -44,5 +45,14 @@ def ingest():
         value=payload["value"],
         recorded_at=recorded_at,
     )
+
+    # RULE-05/06: generic threshold/equality conditions against any ingested
+    # sensor reading (not just camera-derived ones), sharing the exact same
+    # dispatch path frames.py uses — no separate/duplicated action logic.
+    matched = evaluate_sensor_threshold(
+        payload["device_id"], recorded_at, payload["sensor_type"], payload["value"]
+    )
+    if matched:
+        dispatch(payload["device_id"], payload["zone_id"], matched, recorded_at)
 
     return jsonify({"status": "buffered"}), 201
