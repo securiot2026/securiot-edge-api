@@ -296,6 +296,10 @@ The configured YOLO model supplies boxes rather than facial landmarks, so
 ArcFace receives square crops without landmark alignment; extreme poses can
 therefore reduce recognition accuracy.
 
+## Running on a laptop with a tunnel
+
+See [`docs/LOCAL_DEPLOYMENT.md`](docs/LOCAL_DEPLOYMENT.md) for the launchd agents, Cloudflare tunnel, model downloads and troubleshooting used for the demo.
+
 ## Running
 
 This service is meant to run on a machine local to the installation site
