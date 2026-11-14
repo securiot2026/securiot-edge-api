@@ -407,6 +407,17 @@ Automated tests use fakes and generated in-memory JPEGs, so they do not load
 model weights, download artifacts, open a camera, or require a GPU. Real-model
 accuracy must be tested separately with representative, consented images.
 
+## CI/CD
+
+| Workflow | Trigger | What it does |
+| --- | --- | --- |
+| `.github/workflows/ci.yml` | push and pull request to `develop` and `main` | Installs CPU-only PyTorch and the requirements, then runs `pytest` with the mock detection backend. |
+| `.github/workflows/cd.yml` | push to `develop` | Calls the Dokploy deploy webhook so the `securiot-edge-api` application (`PP-0RSsvJD66LtcO9m2re`, branch `develop`) rebuilds. |
+
+Secrets used (repository secrets, names only): `DOKPLOY_DEPLOY_HOOK`.
+
+The webhook only deploys when the request carries `X-GitHub-Event: push` and `ref: refs/heads/develop`, which `cd.yml` already sends.
+
 ## Camera detection contract (Phase 4)
 
 `POST /frames` is the single HTTP contract the ESP32-CAM firmware (Phase 4,
